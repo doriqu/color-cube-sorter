@@ -1,0 +1,4 @@
+secrets.h
+*.bak
+.DS_Store
+build/
