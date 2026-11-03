@@ -1,33 +1,33 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-// Initialisation de l'écran LCD (Adresse I2C souvent 0x27 ou 0x3F, 16 colonnes, 2 lignes)
+// LCD screen initialization (I2C address often 0x27 or 0x3F, 16 columns, 2 rows)
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("\n--- Debut du programme LCD ---");
+  Serial.println("\n--- LCD Program Start ---");
 
-  // Initialisation du bus I2C sur l'ESP32 (SDA = 21, SCL = 22)
+  // I2C bus initialization on the ESP32 (SDA = 21, SCL = 22)
   Wire.begin(21, 22);
-  Serial.println("Bus I2C initialise (SDA=21, SCL=22)");
+  Serial.println("I2C bus initialized (SDA=21, SCL=22)");
 
-  // Initialisation de l'écran LCD
+  // LCD screen initialization
   lcd.init();                      
-  lcd.backlight(); // Allumer le rétroéclairage
-  Serial.println("LCD initialise et retroeclairage active");
+  lcd.backlight(); // Turn on backlight
+  Serial.println("LCD initialized and backlight activated");
 
-  // Affichage sur la 1ère ligne
-  lcd.setCursor(0, 0); // Colonne 0, Ligne 0
-  lcd.print("CUBE ROUGE");
+  // Display on the 1st row
+  lcd.setCursor(0, 0); // Column 0, Row 0
+  lcd.print("RED CUBE");
 
-  // Affichage sur la 2ème ligne
-  lcd.setCursor(0, 1); // Colonne 0, Ligne 1
-  lcd.print("TRI\xE9"); 
-  Serial.println("Texte envoye sur le LCD avec succes !");
+  // Display on the 2nd row
+  lcd.setCursor(0, 1); // Column 0, Row 1
+  lcd.print("SORTED"); 
+  Serial.println("Text sent to LCD successfully!");
 }
 
 void loop() {
-  // Rien à faire ici pour un affichage fixe
+  // Nothing to do here for a static display
 }

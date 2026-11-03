@@ -1,9 +1,9 @@
 // =========================================================================
-// 0. BLYNK (doit être AVANT les #include Blynk)
+// 0. BLYNK (must come BEFORE the Blynk #includes)
 // =========================================================================
 #define BLYNK_TEMPLATE_ID   "TMPL2qTbX3jmd"
 #define BLYNK_TEMPLATE_NAME "Tri Industriel"
-#define BLYNK_AUTH_TOKEN    "I8FXoE_PgriUNRmdeYW3N6cuVDfQfkgl"      // <-- Jeton d'authentification du device
+#define BLYNK_AUTH_TOKEN    "I8FXoE_PgriUNRmdeYW3N6cuVDfQfkgl"      // <-- Device authentication token
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -13,215 +13,219 @@
 #include <BlynkSimpleEsp32.h>
 #include <LiquidCrystal_I2C.h>
 
-// Log horodaté dans le moniteur série : [  12345 ms] message
+// Timestamped log on the serial monitor: [  12345 ms] message
 #define LOG(fmt, ...) Serial.printf("[%8lu ms] " fmt "\n", millis(), ##__VA_ARGS__)
 
+// Colour codes (J / V / B / X) are the single-letter protocol used by the XIAO camera:
+//   J = Jaune (YELLOW), V = Vert (GREEN), B = Bleu (BLUE), X = unknown.
+// They are kept unchanged so the camera firmware does not need to be modified.
+
 // =========================================================================
-// 1. BROCHAGE
+// 1. PIN ASSIGNMENT
 // =========================================================================
-// Moteur pas-à-pas (TB6600) : DIR est câblé directement sur Vcc (un seul sens)
+// Stepper motor (TB6600): DIR is wired directly to Vcc (single direction)
 const uint8_t PIN_PUL = 5;
-const uint8_t PIN_ENA = 2;               // GPIO2 = broche de strapping
-const uint8_t ENA_ACTIF = LOW;           // niveau qui ACTIVE le driver (dépend du câblage ENA+/ENA-)
+const uint8_t PIN_ENA = 2;               // GPIO2 = strapping pin
+const uint8_t ENA_ACTIVE_LEVEL = LOW;    // level that ENABLES the driver (depends on ENA+/ENA- wiring)
 
 const uint8_t PIN_SERVO = 23;
 
-const uint8_t PIN_CAPTEUR_DEBUT = 33;    // ADC1
-const uint8_t PIN_CAPTEUR_FIN   = 32;    // ADC1
+const uint8_t PIN_SENSOR_START = 33;     // ADC1
+const uint8_t PIN_SENSOR_END   = 32;     // ADC1
 
-const uint8_t PIN_LED_VERTE = 27;        // tapis en marche
-const uint8_t PIN_LED_JAUNE = 26;        // tapis à l'arrêt / pause / erreur
-const uint8_t PIN_LED_ROUGE = 14;
+const uint8_t PIN_LED_GREEN  = 27;       // belt running
+const uint8_t PIN_LED_YELLOW = 26;       // belt stopped / paused / error
+const uint8_t PIN_LED_RED    = 14;
 
-// LED qui clignote pour signaler un cube inconnu (X). Mettre PIN_LED_ROUGE pour utiliser la rouge.
-const uint8_t PIN_LED_ALERTE = PIN_LED_ROUGE;
+// LED that blinks to signal an unknown cube (X). Set to PIN_LED_RED to use the red one.
+const uint8_t PIN_LED_ALERT = PIN_LED_RED;
 
-const uint8_t PIN_PAUSE = 12;            // interrupteur à bascule vers GND (INPUT_PULLUP) : sert UNIQUEMENT à REPRENDRE
-                                         // après un arrêt d'urgence (tout changement d'état = reprise)
+const uint8_t PIN_PAUSE = 12;            // toggle switch to GND (INPUT_PULLUP): used ONLY to RESUME
+                                         // after an emergency stop (any state change = resume)
 
 const uint8_t LCD_ADDR = 0x27;
 const uint8_t PIN_SDA  = 21;
 const uint8_t PIN_SCL  = 22;
 LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
 
-const uint8_t PIN_UART_RX = 16;          // <- TX du XIAO
-const uint8_t PIN_UART_TX = 17;          // non utilisé pour l'instant
+const uint8_t PIN_UART_RX = 16;          // <- XIAO TX
+const uint8_t PIN_UART_TX = 17;          // not used for now
 
 // =========================================================================
-// 2. PARAMÈTRES
+// 2. PARAMETERS
 // =========================================================================
-// Moteur
+// Motor
 const float STEPS_PER_REV_MOTOR = 200.0;
-const float MICROSTEP           = 1.0;   // TB6600 réglé sur 1 micropas
-float rpm                       = 24;    // vitesse du tapis (modifiable via setRpm)
+const float MICROSTEP           = 1.0;   // TB6600 set to 1 microstep
+float rpm                       = 24;    // belt speed (changeable via setRpm)
 
-// Géométrie (à mesurer). Les cubes doivent être espacés d'au moins DISTANCE_FIN_BAC_CM.
-const float PERIMETRE_ROULEAU_CM = 10.0;
-const float DISTANCE_FIN_BAC_CM  = 5.0;
+// Geometry (to be measured). Cubes must be spaced at least END_TO_BIN_DISTANCE_CM apart.
+const float ROLLER_PERIMETER_CM    = 10.0;
+const float END_TO_BIN_DISTANCE_CM = 5.0;
 
-// Servo du bac : 3 couleurs triées pour l'instant (servo 180°)
-const int ANGLE_J = 0;
-const int ANGLE_B = 90;
-const int ANGLE_V = 180;
-const int ANGLE_JEPOS = 90;              // position au démarrage / après urgence
+// Bin servo: 3 colours sorted for now (180° servo)
+const int ANGLE_J    = 0;
+const int ANGLE_B    = 90;
+const int ANGLE_V    = 180;
+const int ANGLE_HOME = 90;               // position at startup / after emergency stop
 
-// Capteurs analogiques à faisceau laser.
-// true  = le faisceau est reçu au repos (valeur haute ~4095), un cube qui le coupe fait chuter la valeur (~76)
-// false = la valeur monte quand un cube est présent
-const bool CAPTEUR_DEBUT_ACTIF_BAS = true;
-const bool CAPTEUR_FIN_ACTIF_BAS   = true;
-const int SEUIL_DETECTION = 2000;
-const unsigned long ANTIREBOND_DEBUT_MS = 600;
-const unsigned long ANTIREBOND_FIN_MS   = 300;
+// Analog laser-beam sensors.
+// true  = the beam is received at rest (high value ~4095), a cube cutting it makes the value drop (~76)
+// false = the value rises when a cube is present
+const bool SENSOR_START_ACTIVE_LOW = true;
+const bool SENSOR_END_ACTIVE_LOW   = true;
+const int DETECTION_THRESHOLD = 2000;
+const unsigned long DEBOUNCE_START_MS = 600;
+const unsigned long DEBOUNCE_END_MS   = 300;
 
 // Watchdog
-const bool WATCHDOG_ACTIF = true;
-const unsigned long TIMEOUT_INACTIVITE_MS = 120000;
+const bool WATCHDOG_ENABLED = true;
+const unsigned long INACTIVITY_TIMEOUT_MS = 120000;
 
-// Démarrage différé du tapis
-const unsigned long DELAI_DEMARRAGE_MS = 300;
+// Delayed belt start
+const unsigned long START_DELAY_MS = 300;
 
-// Interrupteur à bascule (reprise) + arrêt d'urgence
-const unsigned long DEBOUNCE_PAUSE_MS = 50;
-const char CODE_ARRET = 'A';                       // reçu du XIAO (bouton poussoir) ou tapé au clavier
-const unsigned long URGENCE_DEMI_PERIODE_MS = 250; // clignotement de la LED rouge pendant l'arrêt
+// Toggle switch (resume) + emergency stop
+const unsigned long TOGGLE_DEBOUNCE_MS = 50;
+const char STOP_CODE = 'A';                           // received from the XIAO (push button) or typed on the keyboard
+const unsigned long EMERGENCY_HALF_PERIOD_MS = 250;   // red LED blinking during the stop
 
-// LED d'alerte
-const unsigned long ALERTE_DEMI_PERIODE_MS = 200;
-const int ALERTE_NB_CLIGNOTEMENTS = 3;   // à la réception d'un 'X'
+// Alert LED
+const unsigned long ALERT_HALF_PERIOD_MS = 200;
+const int ALERT_BLINK_COUNT = 3;         // when an 'X' is received
 
-// Erreur cube inconnu : reprise dès que le capteur de fin est libre.
-const int ECHANTILLONS_LIBRE = 5;
+// Unknown-cube error: resume as soon as the end sensor is clear.
+const int CLEAR_SAMPLES_REQUIRED = 5;
 
-// LCD : réécriture complète périodique pour effacer d'éventuels caractères parasites (0 = désactivé)
+// LCD: periodic full rewrite to erase any stray characters (0 = disabled)
 const unsigned long LCD_REFRESH_MS = 5000;
 
 // Debug
-const bool SIMULATION_CLAVIER = true;             // taper J/V/B/X dans le moniteur série
-const bool DEBUG_UART_BRUT = true;                // affiche chaque octet reçu de la caméra
-const unsigned long HEARTBEAT_MS = 5000;          // ligne d'état périodique (0 = désactivé)
+const bool KEYBOARD_SIMULATION = true;            // type J/V/B/X in the serial monitor
+const bool DEBUG_RAW_UART = true;                 // print every byte received from the camera
+const unsigned long HEARTBEAT_MS = 5000;          // periodic status line (0 = disabled)
 
 // ---- Wi-Fi / Blynk ------------------------------------------------------
 const char* WIFI_SSID = "Infinix HOT 50 Pro+";
 const char* WIFI_PASS = "doriqueleee";
-const char* BLYNK_SERVEUR = "ny3.blynk.cloud";    // région NY3 (vue dans l'URL du dashboard)
+const char* BLYNK_SERVER = "ny3.blynk.cloud";     // NY3 region (seen in the dashboard URL)
 
-const char* CODE_RESET = "EPAC";                  // mot de passe pour remettre les compteurs à zéro
+const char* RESET_CODE = "EPAC";                  // password to reset the counters to zero
 
-// Fuseau horaire pour l'horodatage (Bénin = UTC+1, pas d'heure d'été)
+// Time zone for timestamps (Benin = UTC+1, no daylight saving)
 const long GMT_OFFSET_SEC = 3600;
 
-// Ordre des éléments dans la liste déroulante "Bac Sélection" (V15) du dashboard.
-// Index 0 = premier élément de la liste. ADAPTE si ton ordre est différent.
-const char MENU_BAC[3] = { 'J', 'B', 'V' };       // 0 = YELLOW, 1 = BLUE, 2 = GREEN
-const int  MENU_DECALAGE = 0;                     // mettre 1 si ton menu Blynk renvoie 1,2,3 au lieu de 0,1,2
+// Order of the items in the "Bin Selection" (V15) dropdown on the dashboard.
+// Index 0 = first item in the list. ADJUST if your order is different.
+const char BIN_MENU[3] = { 'J', 'B', 'V' };       // 0 = YELLOW, 1 = BLUE, 2 = GREEN
+const int  MENU_OFFSET = 0;                       // set to 1 if your Blynk menu returns 1,2,3 instead of 0,1,2
 
-// Cadence max d'envoi vers Blynk (la limite du cloud est ~10 messages/s)
-const unsigned long BLYNK_INTERVALLE_MS = 110;
+// Max send rate to Blynk (the cloud limit is ~10 messages/s)
+const unsigned long BLYNK_INTERVAL_MS = 110;
 
 // =========================================================================
-// 3. ÉTAT DU SYSTÈME
+// 3. SYSTEM STATE
 // =========================================================================
-bool tapisActif = false;
-bool attenteDemarrageTapis = false;
-unsigned long tempsDemarrageTapis = 0;
+bool beltActive = false;
+bool beltStartPending = false;
+unsigned long beltStartTime = 0;
 
-bool enPause = false;
-unsigned long debutPause = 0;
+bool paused = false;
+unsigned long pauseStart = 0;
 
-bool erreurCube = false;                 // cube inconnu bloqué sur le capteur de fin
-unsigned long debutErreur = 0;
-int posCubeErreur = 0;                   // position du cube fautif dans la file
-int erreurLecturesLibres = 0;
+bool cubeError = false;                  // unknown cube stuck on the end sensor
+unsigned long errorStart = 0;
+int errorCubePos = 0;                    // position of the faulty cube in the queue
+int errorClearReadings = 0;
 
 struct Cube {
-  char couleur;                 // 'J','V','B','X' ou '?'
-  bool arriveFin;
-  bool binOriente;
-  unsigned long chronoEntree;
-  unsigned long chronoChute;    // jamais modifié après la détection en fin
+  char color;                   // 'J','V','B','X' or '?'
+  bool reachedEnd;
+  bool binAligned;
+  unsigned long entryTime;
+  unsigned long dropTime;       // never modified after detection at the end
 };
 
-const int MAX_CUBES_SUR_TAPIS = 10;
-Cube fileCubes[MAX_CUBES_SUR_TAPIS];
-int debutFile = 0, finFile = 0, nbCubesSurTapis = 0;
+const int MAX_CUBES_ON_BELT = 10;
+Cube cubeQueue[MAX_CUBES_ON_BELT];
+int queueHead = 0, queueTail = 0, cubesOnBelt = 0;
 
-unsigned long dernierTempsActivite = 0;
-const char* derniereSourceActivite = "demarrage";
-unsigned long dernierHeartbeat = 0;
-unsigned long nbOctetsUart = 0;          // total d'octets reçus de la caméra
+unsigned long lastActivityTime = 0;
+const char* lastActivitySource = "startup";
+unsigned long lastHeartbeat = 0;
+unsigned long uartByteCount = 0;         // total bytes received from the camera
 
-// Capteurs : détection par front (cube qui arrive) + antirebond
-struct Capteur {
+// Sensors: edge detection (cube arriving) + debounce
+struct Sensor {
   uint8_t pin;
-  unsigned long antirebondMs;
-  unsigned long dernierMs;
-  bool precedent;               // cube présent à la lecture précédente
-  int valeur;                   // dernière valeur analogique lue
-  bool actifBas;                // true : cube présent = valeur basse
+  unsigned long debounceMs;
+  unsigned long lastMs;
+  bool previous;                // cube present at the previous reading
+  int value;                    // last analog value read
+  bool activeLow;               // true: cube present = low value
 };
-Capteur capDebut = { PIN_CAPTEUR_DEBUT, ANTIREBOND_DEBUT_MS, 0, false, 0, CAPTEUR_DEBUT_ACTIF_BAS };
-Capteur capFin   = { PIN_CAPTEUR_FIN,   ANTIREBOND_FIN_MS,   0, false, 0, CAPTEUR_FIN_ACTIF_BAS };
+Sensor sensorStart = { PIN_SENSOR_START, DEBOUNCE_START_MS, 0, false, 0, SENSOR_START_ACTIVE_LOW };
+Sensor sensorEnd   = { PIN_SENSOR_END,   DEBOUNCE_END_MS,   0, false, 0, SENSOR_END_ACTIVE_LOW };
 
-// Interrupteur à bascule (anti-rebond) : on mémorise le NIVEAU (true = HIGH, false = LOW)
-bool basculeBrute = true, basculeStable = true;
-unsigned long basculeDernierChangement = 0;
+// Toggle switch (debounced): we store the LEVEL (true = HIGH, false = LOW)
+bool toggleRaw = true, toggleStable = true;
+unsigned long toggleLastChange = 0;
 
-// LED d'alerte (clignotement non bloquant)
-int alerteDemiCyclesRestants = 0;
-bool alerteEtat = false;
-unsigned long alerteDernierChangement = 0;
+// Alert LED (non-blocking blinking)
+int alertHalfCyclesLeft = 0;
+bool alertState = false;
+unsigned long alertLastChange = 0;
 
-// LCD : dernier message affiché (pour pouvoir le réécrire)
-char lcdLigne1[17] = "";
-char lcdLigne2[17] = "";
-unsigned long dernierRafraichissementLcd = 0;
+// LCD: last message displayed (so it can be rewritten)
+char lcdLine1[17] = "";
+char lcdLine2[17] = "";
+unsigned long lastLcdRefresh = 0;
 
-// Compteurs de tri (sauvegardés en mémoire flash : survivent à un redémarrage)
+// Sorting counters (saved in flash memory: they survive a reboot)
 Preferences prefs;
 uint32_t cntJ = 0, cntV = 0, cntB = 0, cntX = 0;
-char dernierTri[16] = "-";
-char bacCouleur = 'B';                   // dernier bac orienté (ANGLE_JEPOS = 90° = bleu)
+char lastSorted[16] = "-";
+char binColor = 'B';                     // last bin position (ANGLE_HOME = 90° = blue)
 
 // =========================================================================
-// 3bis. BLYNK : tout tourne dans une tâche séparée (cœur 0)
-//       -> un Wi-Fi/Cloud lent ne bloque JAMAIS le tapis ni les capteurs.
-//       La boucle principale envoie des messages via une file (queue) et lit
-//       des commandes via des drapeaux "volatile".
+// 3bis. BLYNK: everything runs in a separate task (core 0)
+//       -> a slow Wi-Fi/Cloud NEVER blocks the belt or the sensors.
+//       The main loop sends messages through a queue and reads
+//       commands via "volatile" flags.
 // =========================================================================
 struct Msg {
   uint8_t pin;
-  uint8_t type;                 // 0 = entier, 1 = texte
+  uint8_t type;                 // 0 = integer, 1 = text
   int32_t iv;
   char txt[100];
 };
-QueueHandle_t fileBlynk = nullptr;
+QueueHandle_t blynkQueue = nullptr;
 
-// Commandes reçues du dashboard (écrites par la tâche Blynk, lues par loop)
-volatile int8_t cmdPlayPause = 0;        // 0 = rien, 1 = PLAY (reprise), 2 = PAUSE
-volatile int   cmdBacIndex   = -1;       // -1 = rien, sinon index de la liste déroulante
-volatile bool  resetArme     = false;    // interrupteur "Reset DB" (V13)
-volatile bool  codeRecu      = false;    // un code a été saisi dans V16
-char           codeTexte[24] = "";
-volatile bool  resyncDemande = false;    // (re)connexion Blynk : renvoyer tout l'état
-volatile bool  blynkEnLigne  = false;
-bool forcerEtat = true;                  // forcer le renvoi des LED/Play-Pause
+// Commands received from the dashboard (written by the Blynk task, read by loop)
+volatile int8_t cmdPlayPause = 0;        // 0 = nothing, 1 = PLAY (resume), 2 = PAUSE
+volatile int   cmdBinIndex   = -1;       // -1 = nothing, otherwise dropdown index
+volatile bool  resetArmed    = false;    // "Reset DB" switch (V13)
+volatile bool  codeReceived  = false;    // a code was entered in V16
+char           codeText[24]  = "";
+volatile bool  resyncRequested = false;  // Blynk (re)connection: resend the full state
+volatile bool  blynkOnline   = false;
+bool forceState = true;                  // force resending the LEDs / Play-Pause
 
 void pushInt(uint8_t pin, int32_t v) {
-  if (!fileBlynk) return;
+  if (!blynkQueue) return;
   Msg m; m.pin = pin; m.type = 0; m.iv = v; m.txt[0] = 0;
-  xQueueSend(fileBlynk, &m, 0);          // 0 = ne bloque jamais (message perdu si file pleine)
+  xQueueSend(blynkQueue, &m, 0);         // 0 = never blocks (message lost if queue is full)
 }
 
 void pushTxt(uint8_t pin, const char* s) {
-  if (!fileBlynk) return;
+  if (!blynkQueue) return;
   Msg m; m.pin = pin; m.type = 1; m.iv = 0;
   snprintf(m.txt, sizeof(m.txt), "%s", s);
-  xQueueSend(fileBlynk, &m, 0);
+  xQueueSend(blynkQueue, &m, 0);
 }
 
-// Heure réelle (NTP) si disponible, sinon temps depuis le démarrage
-void horodatage(char* buf, size_t n) {
+// Real time (NTP) if available, otherwise time since boot
+void timestamp(char* buf, size_t n) {
   struct tm t;
   if (getLocalTime(&t, 0)) {
     strftime(buf, n, "%H:%M:%S", &t);
@@ -231,105 +235,105 @@ void horodatage(char* buf, size_t n) {
   }
 }
 
-// Une ligne dans le widget Terminal "Historique" (V12) : [HH:MM:SS] message
+// One line in the "History" Terminal widget (V12): [HH:MM:SS] message
 void termLog(const char* fmt, ...) {
   char ts[16];
-  horodatage(ts, sizeof(ts));
-  char corps[80];
+  timestamp(ts, sizeof(ts));
+  char body[80];
   va_list args;
   va_start(args, fmt);
-  vsnprintf(corps, sizeof(corps), fmt, args);
+  vsnprintf(body, sizeof(body), fmt, args);
   va_end(args);
-  char ligne[100];
-  snprintf(ligne, sizeof(ligne), "[%s] %s\n", ts, corps);
-  pushTxt(V12, ligne);
+  char line[100];
+  snprintf(line, sizeof(line), "[%s] %s\n", ts, body);
+  pushTxt(V12, line);
 }
 
-// --- Handlers : appelés par la tâche Blynk quand le dashboard change ----
+// --- Handlers: called by the Blynk task when the dashboard changes ------
 BLYNK_CONNECTED() {
-  resyncDemande = true;
+  resyncRequested = true;
 }
 
 BLYNK_WRITE(V10) {                       // Play / Pause
   cmdPlayPause = param.asInt() ? 1 : 2;
 }
 
-BLYNK_WRITE(V12) {                       // Terminal : l'entrée est IGNORÉE
+BLYNK_WRITE(V12) {                       // Terminal: input is IGNORED
 }
 
-BLYNK_WRITE(V13) {                       // Reset DB : "armer" (ON) ou annuler (OFF)
-  resetArme = param.asInt() != 0;
+BLYNK_WRITE(V13) {                       // Reset DB: "arm" (ON) or cancel (OFF)
+  resetArmed = param.asInt() != 0;
 }
 
-BLYNK_WRITE(V15) {                       // Bac Sélection
-  cmdBacIndex = param.asInt() - MENU_DECALAGE;
+BLYNK_WRITE(V15) {                       // Bin Selection
+  cmdBinIndex = param.asInt() - MENU_OFFSET;
 }
 
-BLYNK_WRITE(V16) {                       // Code de confirmation (Entrée)
-  snprintf(codeTexte, sizeof(codeTexte), "%s", param.asStr());
-  codeRecu = true;                       // écrit en dernier
+BLYNK_WRITE(V16) {                       // Confirmation code (Enter)
+  snprintf(codeText, sizeof(codeText), "%s", param.asStr());
+  codeReceived = true;                   // written last
 }
 
 void blynkTask(void*) {
-  Blynk.config(BLYNK_AUTH_TOKEN, BLYNK_SERVEUR);
-  unsigned long dernierEnvoi = 0;
+  Blynk.config(BLYNK_AUTH_TOKEN, BLYNK_SERVER);
+  unsigned long lastSend = 0;
   Msg m;
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
-      blynkEnLigne = false;
+      blynkOnline = false;
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
     }
-    Blynk.run();                         // peut bloquer pendant une reconnexion : sans importance ici
-    blynkEnLigne = Blynk.connected();
+    Blynk.run();                         // may block during a reconnection: irrelevant here
+    blynkOnline = Blynk.connected();
 
-    if (blynkEnLigne) {
-      if (millis() - dernierEnvoi >= BLYNK_INTERVALLE_MS && xQueueReceive(fileBlynk, &m, 0) == pdTRUE) {
+    if (blynkOnline) {
+      if (millis() - lastSend >= BLYNK_INTERVAL_MS && xQueueReceive(blynkQueue, &m, 0) == pdTRUE) {
         if (m.type == 0) Blynk.virtualWrite(m.pin, (int)m.iv);
         else             Blynk.virtualWrite(m.pin, m.txt);
-        dernierEnvoi = millis();
+        lastSend = millis();
       }
     } else {
-      xQueueReset(fileBlynk);            // hors ligne : on jette, l'état complet sera renvoyé à la reconnexion
+      xQueueReset(blynkQueue);           // offline: discard, the full state will be resent on reconnection
     }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
 // =========================================================================
-// 4. TEMPS : toujours une lecture fraîche de millis()
+// 4. TIME: always a fresh read of millis()
 // =========================================================================
-unsigned long ecouleDepuis(unsigned long t) { return millis() - t; }
+unsigned long elapsedSince(unsigned long t) { return millis() - t; }
 
-void signalerActivite(const char* source) {
-  dernierTempsActivite = millis();
-  derniereSourceActivite = source;
+void signalActivity(const char* source) {
+  lastActivityTime = millis();
+  lastActivitySource = source;
 }
 
 // =========================================================================
-// 5. UTILITAIRES
+// 5. UTILITIES
 // =========================================================================
-unsigned long calculerDelaiChuteMs() {
+unsigned long computeDropDelayMs() {
   if (rpm <= 0) return 2000;
-  float vitesseCmSec = (rpm / 60.0) * PERIMETRE_ROULEAU_CM;
-  return (unsigned long)((DISTANCE_FIN_BAC_CM / vitesseCmSec) * 1000.0);
+  float speedCmPerSec = (rpm / 60.0) * ROLLER_PERIMETER_CM;
+  return (unsigned long)((END_TO_BIN_DISTANCE_CM / speedCmPerSec) * 1000.0);
 }
 
-float frequencePasHz() { return rpm * STEPS_PER_REV_MOTOR * MICROSTEP / 60.0; }
+float stepFrequencyHz() { return rpm * STEPS_PER_REV_MOTOR * MICROSTEP / 60.0; }
 
-void demarrerMoteur() {
-  ledcWriteTone(PIN_PUL, (uint32_t)frequencePasHz());
-  LOG("⚙️ [MOTEUR] ON (%.0f Hz, %.1f tr/min)", frequencePasHz(), rpm);
+void startMotor() {
+  ledcWriteTone(PIN_PUL, (uint32_t)stepFrequencyHz());
+  LOG("⚙️ [MOTOR] ON (%.0f Hz, %.1f rpm)", stepFrequencyHz(), rpm);
 }
-void arreterMoteur() {
+void stopMotor() {
   ledcWriteTone(PIN_PUL, 0);
-  LOG("⚙️ [MOTEUR] OFF");
+  LOG("⚙️ [MOTOR] OFF");
 }
 
-// Change la vitesse (éviter pendant un tri en cours)
-void setRpm(float nouveauRpm) {
-  rpm = nouveauRpm;
-  if (tapisActif && !enPause && !erreurCube) demarrerMoteur();
+// Change the speed (avoid during a sort in progress)
+void setRpm(float newRpm) {
+  rpm = newRpm;
+  if (beltActive && !paused && !cubeError) startMotor();
 }
 
 void servoAngle(int angle) {
@@ -339,20 +343,20 @@ void servoAngle(int angle) {
   ledcWrite(PIN_SERVO, duty);
 }
 
-const char* nomCouleur(char c) {
+const char* colorName(char c) {
   switch (c) {
-    case 'J': return "JAUNE";
-    case 'V': return "VERT";
-    case 'B': return "BLEU";
-    default:  return "INCONNU";
+    case 'J': return "YELLOW";
+    case 'V': return "GREEN";
+    case 'B': return "BLUE";
+    default:  return "UNKNOWN";
   }
 }
 
-// Couleur non triable : X, '?' ou toute autre valeur
-bool estInconnue(char c) { return c != 'J' && c != 'V' && c != 'B'; }
+// Non-sortable colour: X, '?' or any other value
+bool isUnknown(char c) { return c != 'J' && c != 'V' && c != 'B'; }
 
-// Angle du servo pour une couleur (-1 si non triable)
-int angleDe(char c) {
+// Servo angle for a colour (-1 if not sortable)
+int angleFor(char c) {
   switch (c) {
     case 'J': return ANGLE_J;
     case 'V': return ANGLE_V;
@@ -361,317 +365,317 @@ int angleDe(char c) {
   }
 }
 
-// Index de la liste déroulante Blynk pour une couleur
-int indexMenu(char c) {
-  for (int i = 0; i < 3; i++) if (MENU_BAC[i] == c) return i + MENU_DECALAGE;
-  return MENU_DECALAGE;
+// Blynk dropdown index for a colour
+int menuIndex(char c) {
+  for (int i = 0; i < 3; i++) if (BIN_MENU[i] == c) return i + MENU_OFFSET;
+  return MENU_OFFSET;
 }
 
 // --- LCD ---------------------------------------------------------------
-void ecrireLcd() {
+void writeLcd() {
   lcd.clear();
-  lcd.setCursor(0, 0); lcd.print(lcdLigne1);
-  lcd.setCursor(0, 1); lcd.print(lcdLigne2);
+  lcd.setCursor(0, 0); lcd.print(lcdLine1);
+  lcd.setCursor(0, 1); lcd.print(lcdLine2);
 }
 
-void afficherLcd(const char* ligne1, const char* ligne2 = "") {
-  snprintf(lcdLigne1, sizeof(lcdLigne1), "%s", ligne1);
-  snprintf(lcdLigne2, sizeof(lcdLigne2), "%s", ligne2);
-  ecrireLcd();
+void showLcd(const char* line1, const char* line2 = "") {
+  snprintf(lcdLine1, sizeof(lcdLine1), "%s", line1);
+  snprintf(lcdLine2, sizeof(lcdLine2), "%s", line2);
+  writeLcd();
 }
 
-// Réinitialise l'écran et réécrit le dernier message : efface les caractères parasites
-void rafraichirLcd() {
-  if (LCD_REFRESH_MS == 0 || ecouleDepuis(dernierRafraichissementLcd) < LCD_REFRESH_MS) return;
+// Re-initialises the screen and rewrites the last message: erases stray characters
+void refreshLcd() {
+  if (LCD_REFRESH_MS == 0 || elapsedSince(lastLcdRefresh) < LCD_REFRESH_MS) return;
   lcd.init();
   lcd.backlight();
-  ecrireLcd();
-  dernierRafraichissementLcd = millis();
+  writeLcd();
+  lastLcdRefresh = millis();
 }
 
-// Positionne le bac, met à jour le LCD ET la liste déroulante du dashboard (V15)
-void orienterBac(char couleur) {
-  int angle = angleDe(couleur);
+// Positions the bin, updates the LCD AND the dashboard dropdown (V15)
+void orientBin(char color) {
+  int angle = angleFor(color);
   if (angle < 0) {
-    LOG("⚠️ [BAC] Couleur '%c' non triable : bac non orienté.", couleur);
+    LOG("⚠️ [BIN] Colour '%c' is not sortable: bin not oriented.", color);
     return;
   }
   servoAngle(angle);
-  bacCouleur = couleur;
-  pushInt(V15, indexMenu(couleur));
-  afficherLcd("BAC :", nomCouleur(couleur));
-  LOG("🔀 [BAC] Orienté pour '%c' (%s) → servo à %d°", couleur, nomCouleur(couleur), angle);
+  binColor = color;
+  pushInt(V15, menuIndex(color));
+  showLcd("BIN:", colorName(color));
+  LOG("🔀 [BIN] Oriented for '%c' (%s) → servo at %d°", color, colorName(color), angle);
 }
 
-void reinitialiserFile() { nbCubesSurTapis = 0; debutFile = 0; finFile = 0; }
+void resetQueue() { cubesOnBelt = 0; queueHead = 0; queueTail = 0; }
 
-// Retire le cube à la position pos (0 = tête) en décalant les suivants
-void retirerCubeALaPosition(int pos) {
-  if (pos < 0 || pos >= nbCubesSurTapis) return;
-  for (int k = pos; k < nbCubesSurTapis - 1; k++) {
-    fileCubes[(debutFile + k) % MAX_CUBES_SUR_TAPIS] = fileCubes[(debutFile + k + 1) % MAX_CUBES_SUR_TAPIS];
+// Removes the cube at position pos (0 = head) by shifting the following ones
+void removeCubeAt(int pos) {
+  if (pos < 0 || pos >= cubesOnBelt) return;
+  for (int k = pos; k < cubesOnBelt - 1; k++) {
+    cubeQueue[(queueHead + k) % MAX_CUBES_ON_BELT] = cubeQueue[(queueHead + k + 1) % MAX_CUBES_ON_BELT];
   }
-  nbCubesSurTapis--;
-  finFile = (finFile - 1 + MAX_CUBES_SUR_TAPIS) % MAX_CUBES_SUR_TAPIS;
+  cubesOnBelt--;
+  queueTail = (queueTail - 1 + MAX_CUBES_ON_BELT) % MAX_CUBES_ON_BELT;
 }
 
 // =========================================================================
-// 5bis. COMPTEURS + DASHBOARD
+// 5bis. COUNTERS + DASHBOARD
 // =========================================================================
-uint32_t totalTri() { return cntJ + cntV + cntB + cntX; }
+uint32_t totalSorted() { return cntJ + cntV + cntB + cntX; }
 
-void sauverCompteurs() {
+void saveCounters() {
   prefs.putUInt("J", cntJ);
   prefs.putUInt("V", cntV);
   prefs.putUInt("B", cntB);
   prefs.putUInt("X", cntX);
 }
 
-// Envoie tous les compteurs au dashboard
-void pousserCompteurs() {
-  pushInt(V1, (int32_t)totalTri());
+// Sends all counters to the dashboard
+void pushCounters() {
+  pushInt(V1, (int32_t)totalSorted());
   pushInt(V5, (int32_t)cntJ);
   pushInt(V6, (int32_t)cntV);
   pushInt(V7, (int32_t)cntB);
   pushInt(V8, (int32_t)cntX);
 }
 
-// Un cube vient d'être trié (ou retiré s'il est inconnu)
-void enregistrerTri(char couleur) {
-  switch (couleur) {
+// A cube has just been sorted (or removed if unknown)
+void recordSort(char color) {
+  switch (color) {
     case 'J': cntJ++; break;
     case 'V': cntV++; break;
     case 'B': cntB++; break;
     default:  cntX++; break;
   }
-  sauverCompteurs();
-  snprintf(dernierTri, sizeof(dernierTri), "%s", nomCouleur(couleur));
+  saveCounters();
+  snprintf(lastSorted, sizeof(lastSorted), "%s", colorName(color));
 
-  pushTxt(V0, dernierTri);
-  pousserCompteurs();
-  pushInt(V11, (int32_t)totalTri());     // graphique : le total au fil du temps
-  termLog("%s trie | total : %lu", nomCouleur(couleur), (unsigned long)totalTri());
+  pushTxt(V0, lastSorted);
+  pushCounters();
+  pushInt(V11, (int32_t)totalSorted());  // chart: the total over time
+  termLog("%s sorted | total: %lu", colorName(color), (unsigned long)totalSorted());
 }
 
-void remettreCompteursAZero() {
+void resetCounters() {
   cntJ = cntV = cntB = cntX = 0;
-  sauverCompteurs();
-  snprintf(dernierTri, sizeof(dernierTri), "-");
-  pushTxt(V0, dernierTri);
-  pousserCompteurs();
+  saveCounters();
+  snprintf(lastSorted, sizeof(lastSorted), "-");
+  pushTxt(V0, lastSorted);
+  pushCounters();
   pushInt(V11, 0);
-  LOG("🗑️ [RESET] Compteurs remis à zéro depuis le dashboard.");
-  termLog("Compteurs remis a zero");
+  LOG("🗑️ [RESET] Counters reset to zero from the dashboard.");
+  termLog("Counters reset");
 }
 
-// Après (re)connexion : on renvoie tout, le dashboard reflète la réalité du système
-void envoyerEtatComplet() {
-  pushTxt(V0, dernierTri);
-  pousserCompteurs();
+// After (re)connection: resend everything so the dashboard reflects the real system state
+void sendFullState() {
+  pushTxt(V0, lastSorted);
+  pushCounters();
   pushInt(V13, 0);
   pushTxt(V16, "");
-  pushInt(V15, indexMenu(bacCouleur));
-  forcerEtat = true;
-  termLog("ESP32 connecte");
-  LOG("☁️ [BLYNK] Connecté : état complet renvoyé au dashboard.");
+  pushInt(V15, menuIndex(binColor));
+  forceState = true;
+  termLog("ESP32 connected");
+  LOG("☁️ [BLYNK] Connected: full state resent to the dashboard.");
 }
 
-// LED virtuelles Marche/Pause/Alerte + bouton Play/Pause : envoyées seulement si elles changent
-void synchroniserEtatBlynk() {
-  static int8_t derniers[4] = { -1, -1, -1, -1 };
-  if (forcerEtat) {
-    for (auto &d : derniers) d = -1;
-    forcerEtat = false;
+// Virtual Run/Pause/Alert LEDs + Play/Pause button: sent only when they change
+void syncBlynkState() {
+  static int8_t last[4] = { -1, -1, -1, -1 };
+  if (forceState) {
+    for (auto &d : last) d = -1;
+    forceState = false;
   }
-  bool tourne = tapisActif && !enPause && !erreurCube;
+  bool running = beltActive && !paused && !cubeError;
   int8_t v[4] = {
-    (int8_t)(tourne ? 1 : 0),                      // V2 Marche  (= LED verte)
-    (int8_t)(!tourne ? 1 : 0),                     // V3 Pause   (= LED jaune)
-    (int8_t)((enPause || erreurCube) ? 1 : 0),     // V4 Alerte  (= LED rouge)
-    (int8_t)(enPause ? 0 : 1)                      // V10 Play/Pause : ON = système actif
+    (int8_t)(running ? 1 : 0),                     // V2 Running (= green LED)
+    (int8_t)(!running ? 1 : 0),                    // V3 Paused  (= yellow LED)
+    (int8_t)((paused || cubeError) ? 1 : 0),       // V4 Alert   (= red LED)
+    (int8_t)(paused ? 0 : 1)                       // V10 Play/Pause: ON = system active
   };
   const uint8_t pins[4] = { V2, V3, V4, V10 };
   for (int i = 0; i < 4; i++) {
-    if (v[i] != derniers[i]) {
-      derniers[i] = v[i];
+    if (v[i] != last[i]) {
+      last[i] = v[i];
       pushInt(pins[i], (i < 3) ? (v[i] ? 255 : 0) : v[i]);
     }
   }
 }
 
 // =========================================================================
-// 6. CAPTEURS
+// 6. SENSORS
 // =========================================================================
-// Un cube est-il devant le capteur ? (d'après la dernière valeur lue)
-bool cubePresent(const Capteur &c) {
-  return c.actifBas ? (c.valeur < SEUIL_DETECTION) : (c.valeur > SEUIL_DETECTION);
+// Is a cube in front of the sensor? (based on the last value read)
+bool cubePresent(const Sensor &s) {
+  return s.activeLow ? (s.value < DETECTION_THRESHOLD) : (s.value > DETECTION_THRESHOLD);
 }
 
-// Retourne true une seule fois quand un cube ARRIVE devant le capteur
-bool frontMontant(Capteur &c) {
-  c.valeur = analogRead(c.pin);
-  bool present = cubePresent(c);
-  bool front = present && !c.precedent && ecouleDepuis(c.dernierMs) > c.antirebondMs;
-  if (front) c.dernierMs = millis();
-  c.precedent = present;
-  return front;
+// Returns true only once, when a cube ARRIVES in front of the sensor
+bool risingEdge(Sensor &s) {
+  s.value = analogRead(s.pin);
+  bool present = cubePresent(s);
+  bool edge = present && !s.previous && elapsedSince(s.lastMs) > s.debounceMs;
+  if (edge) s.lastMs = millis();
+  s.previous = present;
+  return edge;
 }
 
-// Évite une fausse détection au démarrage : on part de l'état réel des capteurs
-void initialiserCapteurs() {
-  capDebut.valeur = analogRead(capDebut.pin);
-  capFin.valeur   = analogRead(capFin.pin);
-  capDebut.precedent = cubePresent(capDebut);
-  capFin.precedent   = cubePresent(capFin);
-  LOG("📍 [CAPTEURS] Au démarrage : DEBUT = %d (%s) | FIN = %d (%s)",
-      capDebut.valeur, cubePresent(capDebut) ? "CUBE" : "libre",
-      capFin.valeur,   cubePresent(capFin)   ? "CUBE" : "libre");
+// Avoids a false detection at startup: start from the real state of the sensors
+void initSensors() {
+  sensorStart.value = analogRead(sensorStart.pin);
+  sensorEnd.value   = analogRead(sensorEnd.pin);
+  sensorStart.previous = cubePresent(sensorStart);
+  sensorEnd.previous   = cubePresent(sensorEnd);
+  LOG("📍 [SENSORS] At startup: START = %d (%s) | END = %d (%s)",
+      sensorStart.value, cubePresent(sensorStart) ? "CUBE" : "clear",
+      sensorEnd.value,   cubePresent(sensorEnd)   ? "CUBE" : "clear");
 }
 
 // =========================================================================
-// 7. LED
+// 7. LEDs
 // =========================================================================
-void declencherAlerteX() {
-  alerteDemiCyclesRestants = ALERTE_NB_CLIGNOTEMENTS * 2;
-  alerteEtat = false;
-  alerteDernierChangement = millis() - ALERTE_DEMI_PERIODE_MS;  // premier changement immédiat
+void triggerAlertX() {
+  alertHalfCyclesLeft = ALERT_BLINK_COUNT * 2;
+  alertState = false;
+  alertLastChange = millis() - ALERT_HALF_PERIOD_MS;  // first change is immediate
 }
 
-// Phase de clignotement : 3 clignotements après un 'X' reçu ; continu pendant une erreur
-void majAlerte() {
-  bool clignote = erreurCube || alerteDemiCyclesRestants > 0;
-  if (!clignote) { alerteEtat = false; return; }
-  if (ecouleDepuis(alerteDernierChangement) >= ALERTE_DEMI_PERIODE_MS) {
-    alerteEtat = !alerteEtat;
-    alerteDernierChangement = millis();
-    if (!erreurCube && alerteDemiCyclesRestants > 0) alerteDemiCyclesRestants--;
+// Blinking phase: 3 blinks after an 'X' is received; continuous during an error
+void updateAlert() {
+  bool blinking = cubeError || alertHalfCyclesLeft > 0;
+  if (!blinking) { alertState = false; return; }
+  if (elapsedSince(alertLastChange) >= ALERT_HALF_PERIOD_MS) {
+    alertState = !alertState;
+    alertLastChange = millis();
+    if (!cubeError && alertHalfCyclesLeft > 0) alertHalfCyclesLeft--;
   }
 }
 
-void majLeds() {
-  majAlerte();
-  bool tourne = tapisActif && !enPause && !erreurCube;
-  // Pendant l'arrêt d'urgence, seule la LED rouge clignote (la jaune reste fixe)
-  bool clignote = !enPause && (erreurCube || alerteDemiCyclesRestants > 0 || alerteEtat);
-  bool rougeUrgence = enPause && ((millis() / URGENCE_DEMI_PERIODE_MS) % 2 == 0);
+void updateLeds() {
+  updateAlert();
+  bool running = beltActive && !paused && !cubeError;
+  // During the emergency stop, only the red LED blinks (the yellow one stays on)
+  bool blinking = !paused && (cubeError || alertHalfCyclesLeft > 0 || alertState);
+  bool redEmergency = paused && ((millis() / EMERGENCY_HALF_PERIOD_MS) % 2 == 0);
 
-  digitalWrite(PIN_LED_VERTE, tourne);
-  if (PIN_LED_ALERTE == PIN_LED_JAUNE) {
-    digitalWrite(PIN_LED_JAUNE, clignote ? alerteEtat : !tourne);
-    digitalWrite(PIN_LED_ROUGE, rougeUrgence);
+  digitalWrite(PIN_LED_GREEN, running);
+  if (PIN_LED_ALERT == PIN_LED_YELLOW) {
+    digitalWrite(PIN_LED_YELLOW, blinking ? alertState : !running);
+    digitalWrite(PIN_LED_RED, redEmergency);
   } else {
-    digitalWrite(PIN_LED_JAUNE, !tourne);
-    digitalWrite(PIN_LED_ROUGE, rougeUrgence || (clignote && alerteEtat));
+    digitalWrite(PIN_LED_YELLOW, !running);
+    digitalWrite(PIN_LED_RED, redEmergency || (blinking && alertState));
   }
-  synchroniserEtatBlynk();
+  syncBlynkState();
 }
 
 // =========================================================================
-// 8. ARRÊT D'URGENCE / REPRISE
+// 8. EMERGENCY STOP / RESUME
 // =========================================================================
-// Déclenché par 'A' (bouton poussoir du XIAO) ou par le bouton Play/Pause du dashboard.
-void entrerPause(const char* source) {
-  if (enPause) return;
-  enPause = true;
-  debutPause = millis();
-  arreterMoteur();
-  afficherLcd("ARRET URGENCE", "Basculer inter.");
-  LOG("⏸️ [URGENCE] Arrêt demandé (%s) : système en pause. Bascule l'interrupteur (ou Play) pour reprendre.", source);
-  termLog("ARRET D'URGENCE (%s)", source);
+// Triggered by 'A' (XIAO push button) or by the dashboard Play/Pause button.
+void enterPause(const char* source) {
+  if (paused) return;
+  paused = true;
+  pauseStart = millis();
+  stopMotor();
+  showLcd("EMERGENCY STOP", "Flip switch");
+  LOG("⏸️ [EMERGENCY] Stop requested (%s): system paused. Flip the switch (or press Play) to resume.", source);
+  termLog("EMERGENCY STOP (%s)", source);
 }
 
-void sortirPause() {
-  unsigned long duree = ecouleDepuis(debutPause);
+void exitPause() {
+  unsigned long duration = elapsedSince(pauseStart);
 
-  // On gèle tous les chronos : on les décale de la durée de la pause
-  for (int i = 0; i < nbCubesSurTapis; i++) {
-    int idx = (debutFile + i) % MAX_CUBES_SUR_TAPIS;
-    fileCubes[idx].chronoEntree += duree;
-    if (fileCubes[idx].arriveFin) fileCubes[idx].chronoChute += duree;
+  // Freeze all timers: shift them by the duration of the pause
+  for (int i = 0; i < cubesOnBelt; i++) {
+    int idx = (queueHead + i) % MAX_CUBES_ON_BELT;
+    cubeQueue[idx].entryTime += duration;
+    if (cubeQueue[idx].reachedEnd) cubeQueue[idx].dropTime += duration;
   }
-  tempsDemarrageTapis += duree;
-  debutErreur += duree;
-  erreurLecturesLibres = 0;
+  beltStartTime += duration;
+  errorStart += duration;
+  errorClearReadings = 0;
 
-  enPause = false;
-  if (tapisActif && !erreurCube) demarrerMoteur();
-  signalerActivite("reprise");
-  afficherLcd(erreurCube ? "ERREUR CUBE" : "REPRISE", erreurCube ? "Retirer le cube" : "");
-  LOG("▶️ [PAUSE] Reprise après %lu ms.", duree);
-  termLog("Reprise apres %lu ms", duree);
+  paused = false;
+  if (beltActive && !cubeError) startMotor();
+  signalActivity("resume");
+  showLcd(cubeError ? "CUBE ERROR" : "RESUMED", cubeError ? "Remove the cube" : "");
+  LOG("▶️ [PAUSE] Resumed after %lu ms.", duration);
+  termLog("Resumed after %lu ms", duration);
 }
 
-// Suit en permanence l'état (anti-rebond) de l'interrupteur à bascule.
-// S'il CHANGE d'état pendant un arrêt d'urgence, le système reprend.
-void gererInterrupteurBascule() {
-  bool lecture = digitalRead(PIN_PAUSE);
-  if (lecture != basculeBrute) {
-    basculeBrute = lecture;
-    basculeDernierChangement = millis();
+// Continuously tracks the (debounced) state of the toggle switch.
+// If it CHANGES state during an emergency stop, the system resumes.
+void handleToggleSwitch() {
+  bool reading = digitalRead(PIN_PAUSE);
+  if (reading != toggleRaw) {
+    toggleRaw = reading;
+    toggleLastChange = millis();
   }
-  if (ecouleDepuis(basculeDernierChangement) >= DEBOUNCE_PAUSE_MS && basculeStable != basculeBrute) {
-    basculeStable = basculeBrute;
-    LOG("🔘 [BASCULE] Interrupteur passé à %s.", basculeStable ? "HIGH" : "LOW");
-    if (enPause) sortirPause();
+  if (elapsedSince(toggleLastChange) >= TOGGLE_DEBOUNCE_MS && toggleStable != toggleRaw) {
+    toggleStable = toggleRaw;
+    LOG("🔘 [TOGGLE] Switch changed to %s.", toggleStable ? "HIGH" : "LOW");
+    if (paused) exitPause();
   }
 }
 
 // =========================================================================
-// 8bis. COMMANDES VENANT DU DASHBOARD BLYNK
+// 8bis. COMMANDS COMING FROM THE BLYNK DASHBOARD
 // =========================================================================
-void traiterCommandesBlynk() {
-  // (Re)connexion : renvoyer tout l'état
-  if (resyncDemande) {
-    resyncDemande = false;
-    envoyerEtatComplet();
+void handleBlynkCommands() {
+  // (Re)connection: resend the full state
+  if (resyncRequested) {
+    resyncRequested = false;
+    sendFullState();
   }
 
-  // Bouton Play / Pause (V10)
+  // Play / Pause button (V10)
   int8_t pp = cmdPlayPause;
   if (pp) {
     cmdPlayPause = 0;
-    if (pp == 2) entrerPause("DASHBOARD");
-    else if (enPause) sortirPause();
-    else forcerEtat = true;               // déjà en marche : on remet juste le bouton à ON
+    if (pp == 2) enterPause("DASHBOARD");
+    else if (paused) exitPause();
+    else forceState = true;               // already running: just set the button back to ON
   }
 
-  // Liste déroulante Bac Sélection (V15) -> le servo suit
-  int bi = cmdBacIndex;
+  // Bin Selection dropdown (V15) -> the servo follows
+  int bi = cmdBinIndex;
   if (bi >= 0) {
-    cmdBacIndex = -1;
-    if (bi < 3 && !enPause) {
-      char c = MENU_BAC[bi];
-      servoAngle(angleDe(c));
-      bacCouleur = c;
-      afficherLcd("BAC (manuel) :", nomCouleur(c));
-      LOG("🎛️ [BAC] Sélection dashboard : '%c' (%s) → servo à %d°", c, nomCouleur(c), angleDe(c));
-      termLog("Bac manuel : %s", nomCouleur(c));
+    cmdBinIndex = -1;
+    if (bi < 3 && !paused) {
+      char c = BIN_MENU[bi];
+      servoAngle(angleFor(c));
+      binColor = c;
+      showLcd("BIN (manual):", colorName(c));
+      LOG("🎛️ [BIN] Dashboard selection: '%c' (%s) → servo at %d°", c, colorName(c), angleFor(c));
+      termLog("Manual bin: %s", colorName(c));
     } else {
-      pushInt(V15, indexMenu(bacCouleur));  // refus (pause) : on remet la liste sur la vraie position
+      pushInt(V15, menuIndex(binColor));  // refused (paused): put the dropdown back on the real position
     }
   }
 
-  // Code de confirmation (V16) : n'a d'effet que si "Reset DB" (V13) est sur ON
-  if (codeRecu) {
-    codeRecu = false;
+  // Confirmation code (V16): only has an effect if "Reset DB" (V13) is ON
+  if (codeReceived) {
+    codeReceived = false;
     char code[24];
-    snprintf(code, sizeof(code), "%s", codeTexte);
-    // retire espaces/retours à la ligne autour du texte
+    snprintf(code, sizeof(code), "%s", codeText);
+    // strip spaces/newlines around the text
     char *p = code;
     while (*p == ' ') p++;
     for (int n = strlen(p); n > 0 && (p[n - 1] == ' ' || p[n - 1] == '\r' || p[n - 1] == '\n'); n--) p[n - 1] = 0;
 
-    if (resetArme) {
-      if (strcasecmp(p, CODE_RESET) == 0) {
-        remettreCompteursAZero();
+    if (resetArmed) {
+      if (strcasecmp(p, RESET_CODE) == 0) {
+        resetCounters();
       } else {
-        LOG("⛔ [RESET] Code incorrect.");
-        termLog("Code incorrect : reset annule");
+        LOG("⛔ [RESET] Wrong code.");
+        termLog("Wrong code: reset cancelled");
       }
-      resetArme = false;
-      pushInt(V13, 0);                    // le bouton Reset repasse automatiquement à OFF
+      resetArmed = false;
+      pushInt(V13, 0);                    // the Reset button automatically goes back to OFF
     }
-    pushTxt(V16, "");                     // on vide la case de saisie dans tous les cas
+    pushTxt(V16, "");                     // clear the input box in all cases
   }
 }
 
@@ -683,327 +687,327 @@ void setup() {
   Serial1.begin(9600, SERIAL_8N1, PIN_UART_RX, PIN_UART_TX);
 
   pinMode(PIN_ENA, OUTPUT);
-  digitalWrite(PIN_ENA, ENA_ACTIF);
+  digitalWrite(PIN_ENA, ENA_ACTIVE_LEVEL);
 
-  // PWM matériel : canaux fixés à la main (0 et 1 partagent le même timer sur ESP32)
+  // Hardware PWM: channels set by hand (0 and 1 share the same timer on ESP32)
   ledcAttachChannel(PIN_PUL, 1000, 8, 0);
-  arreterMoteur();
+  stopMotor();
   ledcAttachChannel(PIN_SERVO, 50, 14, 2);
-  servoAngle(ANGLE_JEPOS);
+  servoAngle(ANGLE_HOME);
 
-  pinMode(PIN_CAPTEUR_DEBUT, INPUT);
-  pinMode(PIN_CAPTEUR_FIN, INPUT);
+  pinMode(PIN_SENSOR_START, INPUT);
+  pinMode(PIN_SENSOR_END, INPUT);
   pinMode(PIN_PAUSE, INPUT_PULLUP);
   delay(5);
-  basculeBrute = basculeStable = digitalRead(PIN_PAUSE);   // on part de la position réelle de l'interrupteur
-  pinMode(PIN_LED_VERTE, OUTPUT);
-  pinMode(PIN_LED_JAUNE, OUTPUT);
-  pinMode(PIN_LED_ROUGE, OUTPUT);
-  digitalWrite(PIN_LED_ROUGE, LOW);
+  toggleRaw = toggleStable = digitalRead(PIN_PAUSE);   // start from the real switch position
+  pinMode(PIN_LED_GREEN, OUTPUT);
+  pinMode(PIN_LED_YELLOW, OUTPUT);
+  pinMode(PIN_LED_RED, OUTPUT);
+  digitalWrite(PIN_LED_RED, LOW);
 
   Wire.begin(PIN_SDA, PIN_SCL);
-  Wire.setClock(100000);        // I2C à 100 kHz : plus tolérant au bruit
-  Wire.setTimeOut(100);         // évite qu'un blocage I2C fige le programme
+  Wire.setClock(100000);        // I2C at 100 kHz: more noise tolerant
+  Wire.setTimeOut(100);         // prevents an I2C hang from freezing the program
   lcd.init();
   lcd.backlight();
-  afficherLcd("Systeme pret", "En attente...");
-  dernierRafraichissementLcd = millis();
+  showLcd("System ready", "Waiting...");
+  lastLcdRefresh = millis();
 
-  initialiserCapteurs();
+  initSensors();
 
-  // Compteurs sauvegardés
+  // Saved counters
   prefs.begin("tri", false);
   cntJ = prefs.getUInt("J", 0);
   cntV = prefs.getUInt("V", 0);
   cntB = prefs.getUInt("B", 0);
   cntX = prefs.getUInt("X", 0);
-  LOG("💾 [COMPTEURS] J=%lu V=%lu B=%lu X=%lu (total %lu)",
-      (unsigned long)cntJ, (unsigned long)cntV, (unsigned long)cntB, (unsigned long)cntX, (unsigned long)totalTri());
+  LOG("💾 [COUNTERS] J=%lu V=%lu B=%lu X=%lu (total %lu)",
+      (unsigned long)cntJ, (unsigned long)cntV, (unsigned long)cntB, (unsigned long)cntX, (unsigned long)totalSorted());
 
-  // Wi-Fi (non bloquant) + heure NTP + tâche Blynk sur le cœur 0
+  // Wi-Fi (non-blocking) + NTP time + Blynk task on core 0
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   configTime(GMT_OFFSET_SEC, 0, "pool.ntp.org", "time.google.com");
-  fileBlynk = xQueueCreate(48, sizeof(Msg));
+  blynkQueue = xQueueCreate(48, sizeof(Msg));
   xTaskCreatePinnedToCore(blynkTask, "blynk", 8192, nullptr, 1, nullptr, 0);
 
-  signalerActivite("demarrage");
-  majLeds();
-  LOG("✔️ [SYSTEME] Prêt | %.1f tr/min | %.0f Hz | délai chute %lu ms | watchdog %s (%lu s)",
-      rpm, frequencePasHz(), calculerDelaiChuteMs(),
-      WATCHDOG_ACTIF ? "ON" : "OFF", TIMEOUT_INACTIVITE_MS / 1000);
-  LOG("✔️ [SYSTEME] Servo : J=%d° B=%d° V=%d° | seuil capteurs = %d", ANGLE_J, ANGLE_B, ANGLE_V, SEUIL_DETECTION);
-  LOG("✔️ [SYSTEME] UART caméra : RX=GPIO%d à 9600 bauds, 8N1.", PIN_UART_RX);
-  LOG("✔️ [SYSTEME] Wi-Fi '%s' en cours de connexion (non bloquant)...", WIFI_SSID);
-  if (SIMULATION_CLAVIER) LOG("⌨️ [SYSTEME] Simulation caméra : tape J, V, B ou X dans le moniteur série.");
+  signalActivity("startup");
+  updateLeds();
+  LOG("✔️ [SYSTEM] Ready | %.1f rpm | %.0f Hz | drop delay %lu ms | watchdog %s (%lu s)",
+      rpm, stepFrequencyHz(), computeDropDelayMs(),
+      WATCHDOG_ENABLED ? "ON" : "OFF", INACTIVITY_TIMEOUT_MS / 1000);
+  LOG("✔️ [SYSTEM] Servo: J=%d° B=%d° V=%d° | sensor threshold = %d", ANGLE_J, ANGLE_B, ANGLE_V, DETECTION_THRESHOLD);
+  LOG("✔️ [SYSTEM] Camera UART: RX=GPIO%d at 9600 baud, 8N1.", PIN_UART_RX);
+  LOG("✔️ [SYSTEM] Wi-Fi '%s' connecting (non-blocking)...", WIFI_SSID);
+  if (KEYBOARD_SIMULATION) LOG("⌨️ [SYSTEM] Camera simulation: type J, V, B or X in the serial monitor.");
 }
 
 // =========================================================================
-// 10. LOGIQUE
+// 10. LOGIC
 // =========================================================================
-void ajouterNouveauCube() {
-  if (nbCubesSurTapis >= MAX_CUBES_SUR_TAPIS) {
-    LOG("⚠️ [DEBUT] File pleine, cube ignoré.");
+void addNewCube() {
+  if (cubesOnBelt >= MAX_CUBES_ON_BELT) {
+    LOG("⚠️ [START] Queue full, cube ignored.");
     return;
   }
-  fileCubes[finFile] = { '?', false, false, millis(), 0 };
-  finFile = (finFile + 1) % MAX_CUBES_SUR_TAPIS;
-  nbCubesSurTapis++;
-  LOG("📥 [DEBUT] Nouveau cube ajouté à la file (%d sur le tapis)", nbCubesSurTapis);
+  cubeQueue[queueTail] = { '?', false, false, millis(), 0 };
+  queueTail = (queueTail + 1) % MAX_CUBES_ON_BELT;
+  cubesOnBelt++;
+  LOG("📥 [START] New cube added to the queue (%d on the belt)", cubesOnBelt);
 
-  char ligne2[17];
-  snprintf(ligne2, sizeof(ligne2), "Sur tapis : %d", nbCubesSurTapis);
-  afficherLcd("Nouveau cube", ligne2);
+  char line2[17];
+  snprintf(line2, sizeof(line2), "On belt: %d", cubesOnBelt);
+  showLcd("New cube", line2);
 
-  if (!tapisActif && !attenteDemarrageTapis) {
-    attenteDemarrageTapis = true;
-    tempsDemarrageTapis = millis();
-    LOG("⏱️ [TAPIS] Démarrage dans %lu ms.", DELAI_DEMARRAGE_MS);
+  if (!beltActive && !beltStartPending) {
+    beltStartPending = true;
+    beltStartTime = millis();
+    LOG("⏱️ [BELT] Starting in %lu ms.", START_DELAY_MS);
   }
 }
 
-// Une seule fonction pour la couleur, qu'elle vienne du XIAO ou du clavier
-void recevoirCouleur(char code, const char* source) {
+// A single function for the colour, whether it comes from the XIAO or the keyboard
+void receiveColor(char code, const char* source) {
   code = toupper(code);
   if (code != 'J' && code != 'V' && code != 'B' && code != 'X') return; // ignore \r \n etc.
-  signalerActivite(source);
+  signalActivity(source);
 
-  for (int i = 0; i < nbCubesSurTapis; i++) {
-    int idx = (debutFile + i) % MAX_CUBES_SUR_TAPIS;
-    if (fileCubes[idx].couleur == '?') {
-      fileCubes[idx].couleur = code;
-      LOG("📷 [%s] Couleur '%c' (%s) reçue → attribuée au cube en position %d", source, code, nomCouleur(code), i);
+  for (int i = 0; i < cubesOnBelt; i++) {
+    int idx = (queueHead + i) % MAX_CUBES_ON_BELT;
+    if (cubeQueue[idx].color == '?') {
+      cubeQueue[idx].color = code;
+      LOG("📷 [%s] Colour '%c' (%s) received → assigned to the cube at position %d", source, code, colorName(code), i);
       if (code == 'X') {
-        LOG("🟡 [CAMERA] Couleur inconnue : le cube bloquera le tapis en fin de course.");
-        declencherAlerteX();
+        LOG("🟡 [CAMERA] Unknown colour: the cube will block the belt at the end of its run.");
+        triggerAlertX();
       }
       return;
     }
   }
-  LOG("📷 [%s] Couleur '%c' (%s) reçue mais aucun cube en attente : ignorée.", source, code, nomCouleur(code));
+  LOG("📷 [%s] Colour '%c' (%s) received but no cube is waiting: ignored.", source, code, colorName(code));
 }
 
-// Lit un octet de l'UART caméra et l'affiche tel quel (debug)
-int lireOctetCamera(bool pris_en_compte) {
-  int octet = Serial1.read();
-  nbOctetsUart++;
-  if (DEBUG_UART_BRUT) {
-    if (octet >= 32 && octet < 127)
-      LOG("🔌 [UART RX] octet 0x%02X '%c'%s", octet, (char)octet, pris_en_compte ? "" : " (ignoré : arrêt d'urgence)");
+// Reads a byte from the camera UART and prints it as-is (debug)
+int readCameraByte(bool accepted) {
+  int byteRead = Serial1.read();
+  uartByteCount++;
+  if (DEBUG_RAW_UART) {
+    if (byteRead >= 32 && byteRead < 127)
+      LOG("🔌 [UART RX] byte 0x%02X '%c'%s", byteRead, (char)byteRead, accepted ? "" : " (ignored: emergency stop)");
     else
-      LOG("🔌 [UART RX] octet 0x%02X (non imprimable)%s", octet, pris_en_compte ? "" : " (ignoré : arrêt d'urgence)");
+      LOG("🔌 [UART RX] byte 0x%02X (non-printable)%s", byteRead, accepted ? "" : " (ignored: emergency stop)");
   }
-  return octet;
+  return byteRead;
 }
 
-// Aiguillage d'un octet reçu : 'A' = arrêt d'urgence, sinon couleur (J/V/B/X)
-void recevoirOctet(char c, const char* source) {
-  if (toupper(c) == CODE_ARRET) { entrerPause(source); return; }
-  recevoirCouleur(c, source);
+// Dispatches a received byte: 'A' = emergency stop, otherwise colour (J/V/B/X)
+void receiveByte(char c, const char* source) {
+  if (toupper(c) == STOP_CODE) { enterPause(source); return; }
+  receiveColor(c, source);
 }
 
-void traiteruartCamera() {
-  while (Serial1.available() > 0) recevoirOctet((char)lireOctetCamera(true), "UART");
-  if (SIMULATION_CLAVIER) {
-    while (Serial.available() > 0) recevoirOctet((char)Serial.read(), "CLAVIER");
+void handleCameraUart() {
+  while (Serial1.available() > 0) receiveByte((char)readCameraByte(true), "UART");
+  if (KEYBOARD_SIMULATION) {
+    while (Serial.available() > 0) receiveByte((char)Serial.read(), "KEYBOARD");
   }
 }
 
-// Cube inconnu en bout de tapis : le moteur s'arrête immédiatement, pile sur le capteur de fin
-void declencherErreurCube(int pos) {
-  erreurCube = true;
-  posCubeErreur = pos;
-  debutErreur = millis();
-  erreurLecturesLibres = 0;
-  arreterMoteur();
-  afficherLcd("ERREUR CUBE", "Retirer le cube");
-  LOG("🚨 [ERREUR] Cube de couleur inconnue sur le capteur de fin : moteur arrêté, retire-le à la main.");
-  termLog("ERREUR : cube inconnu, retirer");
+// Unknown cube at the end of the belt: the motor stops immediately, right on the end sensor
+void triggerCubeError(int pos) {
+  cubeError = true;
+  errorCubePos = pos;
+  errorStart = millis();
+  errorClearReadings = 0;
+  stopMotor();
+  showLcd("CUBE ERROR", "Remove the cube");
+  LOG("🚨 [ERROR] Unknown-colour cube on the end sensor: motor stopped, remove it by hand.");
+  termLog("ERROR: unknown cube, remove it");
 }
 
-// Après le tri / retrait du cube de tête : prépare le suivant
-void passerAuCubeSuivant(unsigned long delaiChute) {
-  if (nbCubesSurTapis == 0) {
-    tapisActif = false;
-    arreterMoteur();
-    LOG("🛑 [TAPIS] File vide. Arrêt normal du moteur.");
+// After the head cube is sorted / removed: prepare the next one
+void advanceToNextCube(unsigned long dropDelay) {
+  if (cubesOnBelt == 0) {
+    beltActive = false;
+    stopMotor();
+    LOG("🛑 [BELT] Queue empty. Normal motor stop.");
     return;
   }
-  Cube &suivant = fileCubes[debutFile];
-  if (suivant.arriveFin && !suivant.binOriente) {
-    suivant.binOriente = true;
-    orienterBac(suivant.couleur);
-    unsigned long ecoule = ecouleDepuis(suivant.chronoChute);
-    if (ecoule >= delaiChute)
-      LOG("⚠️ [ALERTE] Cubes trop rapprochés : le suivant est déjà tombé avant l'orientation du bac !");
+  Cube &next = cubeQueue[queueHead];
+  if (next.reachedEnd && !next.binAligned) {
+    next.binAligned = true;
+    orientBin(next.color);
+    unsigned long elapsed = elapsedSince(next.dropTime);
+    if (elapsed >= dropDelay)
+      LOG("⚠️ [ALERT] Cubes too close together: the next one already dropped before the bin was oriented!");
     else
-      LOG("ℹ️ [BAC] Orienté avec %lu ms de marge avant la chute du suivant.", delaiChute - ecoule);
+      LOG("ℹ️ [BIN] Oriented with %lu ms to spare before the next cube drops.", dropDelay - elapsed);
   }
 }
 
-void traiterFinDeTapis() {
-  for (int i = 0; i < nbCubesSurTapis; i++) {
-    int idx = (debutFile + i) % MAX_CUBES_SUR_TAPIS;
-    if (!fileCubes[idx].arriveFin) {
-      fileCubes[idx].arriveFin = true;
-      fileCubes[idx].chronoChute = millis();
-      LOG("🏁 [FIN] Cube '%c' (%s, position %d) arrive au bout du tapis.",
-          fileCubes[idx].couleur, nomCouleur(fileCubes[idx].couleur), i);
+void handleEndOfBelt() {
+  for (int i = 0; i < cubesOnBelt; i++) {
+    int idx = (queueHead + i) % MAX_CUBES_ON_BELT;
+    if (!cubeQueue[idx].reachedEnd) {
+      cubeQueue[idx].reachedEnd = true;
+      cubeQueue[idx].dropTime = millis();
+      LOG("🏁 [END] Cube '%c' (%s, position %d) reaches the end of the belt.",
+          cubeQueue[idx].color, colorName(cubeQueue[idx].color), i);
 
-      if (estInconnue(fileCubes[idx].couleur)) {
-        // Arrêt immédiat, quelle que soit la position dans la file
-        if (i > 0) LOG("⚠️ [ALERTE] Un cube précédent est encore en chute : l'espacement entre cubes est < %.0f cm.", DISTANCE_FIN_BAC_CM);
-        fileCubes[idx].binOriente = true;
-        declencherErreurCube(i);
+      if (isUnknown(cubeQueue[idx].color)) {
+        // Immediate stop, regardless of position in the queue
+        if (i > 0) LOG("⚠️ [ALERT] A previous cube is still dropping: spacing between cubes is < %.0f cm.", END_TO_BIN_DISTANCE_CM);
+        cubeQueue[idx].binAligned = true;
+        triggerCubeError(i);
       } else if (i == 0) {
-        fileCubes[idx].binOriente = true;
-        orienterBac(fileCubes[idx].couleur);
+        cubeQueue[idx].binAligned = true;
+        orientBin(cubeQueue[idx].color);
       } else {
-        LOG("⏳ [BAC] Orientation reportée : cube précédent encore en chute.");
+        LOG("⏳ [BIN] Orientation postponed: previous cube still dropping.");
       }
       return;
     }
   }
-  LOG("ℹ️ [FIN] Détection en fin de tapis mais aucun cube en attente : ignorée.");
+  LOG("ℹ️ [END] Detection at the end of the belt but no cube waiting: ignored.");
 }
 
-// Attend que le cube bloqué soit retiré à la main : reprise dès que le capteur de fin est libre
-void gererErreurCube() {
-  if (cubePresent(capFin)) erreurLecturesLibres = 0;
-  else erreurLecturesLibres++;
-  if (erreurLecturesLibres < ECHANTILLONS_LIBRE) return;
+// Waits for the stuck cube to be removed by hand: resume as soon as the end sensor is clear
+void handleCubeError() {
+  if (cubePresent(sensorEnd)) errorClearReadings = 0;
+  else errorClearReadings++;
+  if (errorClearReadings < CLEAR_SAMPLES_REQUIRED) return;
 
-  unsigned long duree = ecouleDepuis(debutErreur);
-  LOG("✅ [ERREUR] Cube retiré (capteur de fin libre, valeur = %d, après %lu ms d'arrêt). Reprise.", capFin.valeur, duree);
-  erreurCube = false;
+  unsigned long duration = elapsedSince(errorStart);
+  LOG("✅ [ERROR] Cube removed (end sensor clear, value = %d, after %lu ms stopped). Resuming.", sensorEnd.value, duration);
+  cubeError = false;
 
-  enregistrerTri('X');                    // compté dans "Count UNKNOWN"
+  recordSort('X');                        // counted in "Count UNKNOWN"
 
-  // le cube fautif quitte la file ; les autres cubes ne doivent pas avoir "avancé" pendant l'arrêt
-  retirerCubeALaPosition(posCubeErreur);
-  for (int i = 0; i < nbCubesSurTapis; i++) {
-    int idx = (debutFile + i) % MAX_CUBES_SUR_TAPIS;
-    fileCubes[idx].chronoEntree += duree;
-    if (fileCubes[idx].arriveFin) fileCubes[idx].chronoChute += duree;
+  // the faulty cube leaves the queue; the other cubes must not have "advanced" during the stop
+  removeCubeAt(errorCubePos);
+  for (int i = 0; i < cubesOnBelt; i++) {
+    int idx = (queueHead + i) % MAX_CUBES_ON_BELT;
+    cubeQueue[idx].entryTime += duration;
+    if (cubeQueue[idx].reachedEnd) cubeQueue[idx].dropTime += duration;
   }
 
-  signalerActivite("erreur resolue");
-  afficherLcd("Cube retire", "Reprise");
+  signalActivity("error resolved");
+  showLcd("Cube removed", "Resuming");
 
-  passerAuCubeSuivant(calculerDelaiChuteMs());
-  if (nbCubesSurTapis > 0) demarrerMoteur();
+  advanceToNextCube(computeDropDelayMs());
+  if (cubesOnBelt > 0) startMotor();
 }
 
-void afficherHeartbeat() {
-  if (HEARTBEAT_MS == 0 || ecouleDepuis(dernierHeartbeat) < HEARTBEAT_MS) return;
-  dernierHeartbeat = millis();
-  const char* etat = enPause ? "PAUSE" : erreurCube ? "ERREUR" : tapisActif ? "MARCHE" : "ARRET";
-  LOG("💓 [ETAT] %s | cubes : %d | DEBUT=%d (%s) FIN=%d (%s) | UART : %lu octets reçus | %.1f tr/min | Blynk : %s",
-      etat, nbCubesSurTapis,
-      capDebut.valeur, cubePresent(capDebut) ? "CUBE" : "libre",
-      capFin.valeur,   cubePresent(capFin)   ? "CUBE" : "libre",
-      nbOctetsUart, rpm, blynkEnLigne ? "EN LIGNE" : "hors ligne");
+void printHeartbeat() {
+  if (HEARTBEAT_MS == 0 || elapsedSince(lastHeartbeat) < HEARTBEAT_MS) return;
+  lastHeartbeat = millis();
+  const char* state = paused ? "PAUSED" : cubeError ? "ERROR" : beltActive ? "RUNNING" : "STOPPED";
+  LOG("💓 [STATE] %s | cubes: %d | START=%d (%s) END=%d (%s) | UART: %lu bytes received | %.1f rpm | Blynk: %s",
+      state, cubesOnBelt,
+      sensorStart.value, cubePresent(sensorStart) ? "CUBE" : "clear",
+      sensorEnd.value,   cubePresent(sensorEnd)   ? "CUBE" : "clear",
+      uartByteCount, rpm, blynkOnline ? "ONLINE" : "offline");
 }
 
 // =========================================================================
 // 11. LOOP
 // =========================================================================
 void loop() {
-  gererInterrupteurBascule();
-  traiterCommandesBlynk();
-  afficherHeartbeat();
-  rafraichirLcd();
+  handleToggleSwitch();
+  handleBlynkCommands();
+  printHeartbeat();
+  refreshLcd();
 
-  // --- EN PAUSE : tout est ignoré (on vide les buffers et on garde les fronts à jour)
-  if (enPause) {
-    while (Serial1.available() > 0) lireOctetCamera(false);
-    if (SIMULATION_CLAVIER) while (Serial.available() > 0) Serial.read();
-    frontMontant(capDebut);
-    frontMontant(capFin);
-    majLeds();
+  // --- PAUSED: everything is ignored (flush buffers and keep the edges up to date)
+  if (paused) {
+    while (Serial1.available() > 0) readCameraByte(false);
+    if (KEYBOARD_SIMULATION) while (Serial.available() > 0) Serial.read();
+    risingEdge(sensorStart);
+    risingEdge(sensorEnd);
+    updateLeds();
     return;
   }
 
-  // 1. Lecture unique des capteurs ; toute détection est un signe de vie
-  bool detectionDebut = frontMontant(capDebut);
-  bool detectionFin   = frontMontant(capFin);
-  if (detectionDebut) {
-    LOG("📍 [CAPTEUR DEBUT] Cube détecté (valeur = %d)", capDebut.valeur);
-    signalerActivite("capteur DEBUT");
-    ajouterNouveauCube();
+  // 1. Single read of the sensors; any detection is a sign of life
+  bool detectedStart = risingEdge(sensorStart);
+  bool detectedEnd   = risingEdge(sensorEnd);
+  if (detectedStart) {
+    LOG("📍 [START SENSOR] Cube detected (value = %d)", sensorStart.value);
+    signalActivity("START sensor");
+    addNewCube();
   }
-  if (detectionFin) {
-    LOG("📍 [CAPTEUR FIN] Cube détecté (valeur = %d)", capFin.valeur);
-    signalerActivite("capteur FIN");
+  if (detectedEnd) {
+    LOG("📍 [END SENSOR] Cube detected (value = %d)", sensorEnd.value);
+    signalActivity("END sensor");
   }
 
-  // 2. Couleur (UART du XIAO ou clavier) ou arrêt d'urgence 'A'
-  traiteruartCamera();
+  // 2. Colour (XIAO UART or keyboard) or emergency stop 'A'
+  handleCameraUart();
 
-  // 'A' vient d'être reçu : on coupe tout de suite (pas de démarrage différé, etc.)
-  if (enPause) {
-    majLeds();
+  // 'A' was just received: cut everything right away (no delayed start, etc.)
+  if (paused) {
+    updateLeds();
     return;
   }
 
-  // 2bis. Erreur cube inconnu : tapis arrêté, on attend le retrait manuel
-  if (erreurCube) {
-    gererErreurCube();
-    majLeds();
+  // 2bis. Unknown-cube error: belt stopped, waiting for manual removal
+  if (cubeError) {
+    handleCubeError();
+    updateLeds();
     return;
   }
 
-  // 3. Watchdog d'inactivité
-  if (WATCHDOG_ACTIF && tapisActif && ecouleDepuis(dernierTempsActivite) >= TIMEOUT_INACTIVITE_MS) {
-    LOG("🚨 [URGENCE] %lu ms sans activité (dernière : %s). Arrêt et réinitialisation !",
-        ecouleDepuis(dernierTempsActivite), derniereSourceActivite);
-    termLog("Watchdog : inactivite, reinitialisation");
-    tapisActif = false;
-    attenteDemarrageTapis = false;
-    arreterMoteur();
-    servoAngle(ANGLE_JEPOS);
-    bacCouleur = 'B';
-    pushInt(V15, indexMenu(bacCouleur));
-    reinitialiserFile();
+  // 3. Inactivity watchdog
+  if (WATCHDOG_ENABLED && beltActive && elapsedSince(lastActivityTime) >= INACTIVITY_TIMEOUT_MS) {
+    LOG("🚨 [EMERGENCY] %lu ms without activity (last: %s). Stop and reset!",
+        elapsedSince(lastActivityTime), lastActivitySource);
+    termLog("Watchdog: inactivity, resetting");
+    beltActive = false;
+    beltStartPending = false;
+    stopMotor();
+    servoAngle(ANGLE_HOME);
+    binColor = 'B';
+    pushInt(V15, menuIndex(binColor));
+    resetQueue();
     char msg[17];
-    snprintf(msg, sizeof(msg), "Inactivite %lus", TIMEOUT_INACTIVITE_MS / 1000);
-    afficherLcd("URGENCE", msg);
-    signalerActivite("reinitialisation");
+    snprintf(msg, sizeof(msg), "Idle %lus", INACTIVITY_TIMEOUT_MS / 1000);
+    showLcd("EMERGENCY", msg);
+    signalActivity("reset");
   }
 
-  // 4. Démarrage différé du tapis
-  if (attenteDemarrageTapis && ecouleDepuis(tempsDemarrageTapis) >= DELAI_DEMARRAGE_MS) {
-    tapisActif = true;
-    attenteDemarrageTapis = false;
-    demarrerMoteur();
-    signalerActivite("demarrage tapis");
-    LOG("🚀 [TAPIS] Démarrage du moteur.");
+  // 4. Delayed belt start
+  if (beltStartPending && elapsedSince(beltStartTime) >= START_DELAY_MS) {
+    beltActive = true;
+    beltStartPending = false;
+    startMotor();
+    signalActivity("belt start");
+    LOG("🚀 [BELT] Starting the motor.");
   }
 
-  // 5. Capteur de fin de tapis
-  if (detectionFin) traiterFinDeTapis();
+  // 5. End-of-belt sensor
+  if (detectedEnd) handleEndOfBelt();
 
-  // 6. Fin de chute du cube de tête (pas pendant une erreur)
-  if (!erreurCube && nbCubesSurTapis > 0) {
-    Cube &tete = fileCubes[debutFile];
-    unsigned long delaiChute = calculerDelaiChuteMs();
+  // 6. End of the head cube's drop (not during an error)
+  if (!cubeError && cubesOnBelt > 0) {
+    Cube &head = cubeQueue[queueHead];
+    unsigned long dropDelay = computeDropDelayMs();
 
-    if (tete.arriveFin && ecouleDepuis(tete.chronoChute) >= delaiChute) {
-      signalerActivite("cube trie");
-      LOG("✅ [TRI] OBJET TRIÉ | couleur '%c' (%s) | délai : %lu ms | transit total : %lu ms",
-          tete.couleur, nomCouleur(tete.couleur), delaiChute, ecouleDepuis(tete.chronoEntree));
-      afficherLcd("OBJET TRIE", nomCouleur(tete.couleur));
+    if (head.reachedEnd && elapsedSince(head.dropTime) >= dropDelay) {
+      signalActivity("cube sorted");
+      LOG("✅ [SORT] ITEM SORTED | colour '%c' (%s) | delay: %lu ms | total transit: %lu ms",
+          head.color, colorName(head.color), dropDelay, elapsedSince(head.entryTime));
+      showLcd("ITEM SORTED", colorName(head.color));
 
-      enregistrerTri(tete.couleur);       // compteurs + Dernier Tri + Historique + Graphique
+      recordSort(head.color);             // counters + Last Sorted + History + Chart
 
-      debutFile = (debutFile + 1) % MAX_CUBES_SUR_TAPIS;
-      nbCubesSurTapis--;
+      queueHead = (queueHead + 1) % MAX_CUBES_ON_BELT;
+      cubesOnBelt--;
 
-      passerAuCubeSuivant(delaiChute);
+      advanceToNextCube(dropDelay);
     }
   }
 
-  // 7. LED
-  majLeds();
+  // 7. LEDs
+  updateLeds();
 }

@@ -4,13 +4,13 @@
 #include <math.h>
 
 // =========================================================================
-// 1. CONFIGURATION WI-FI
+// 1. WI-FI CONFIGURATION
 // =========================================================================
 const char* ssid     = "Infinix HOT 50 Pro+";
 const char* password = "doriqueleee";
 
 // =========================================================================
-// 2. BROCHAGE XIAO ESP32S3 SENSE
+// 2. XIAO ESP32S3 SENSE PINOUT
 // =========================================================================
 #define PWDN_GPIO_NUM  -1
 #define RESET_GPIO_NUM -1
@@ -38,21 +38,21 @@ const int W = 320, H = 240;
 const int ROI = 100;
 const int NFRAMES = 10;
 
-// Variables globales HSV
+// HSV Global variables
 float S_MIN = 0.30;
 float V_MIN = 0.20;
-float hCenter[3] = {0, 120, 240};  // Rouge, Vert, Bleu
+float hCenter[3] = {0, 120, 240};  // Red, Green, Blue
 float hTol[3]    = {20, 30, 30};
 bool  done[3]    = {false, false, false};
 float whiteS99 = 0, whiteV = 0;
 bool  whiteDone = false;
-const char* NAMES[3] = {"ROUGE", "VERT", "BLEU"};
+const char* NAMES[3] = {"RED", "GREEN", "BLUE"};
 
 volatile bool isCalibrating = false;
 httpd_handle_t camera_httpd = NULL;
 
 // =========================================================================
-// 3. FONCTIONS TRAITEMENT D'IMAGE & HSV
+// 3. IMAGE PROCESSING & HSV FUNCTIONS
 // =========================================================================
 void rgb2hsv(uint8_t r, uint8_t g, uint8_t b, float &h, float &s, float &v) {
   float rf = r / 255.0, gf = g / 255.0, bf = b / 255.0;
@@ -127,14 +127,14 @@ String calibWhite() {
     whiteDone = true;
 
     char logBuf[200];
-    snprintf(logBuf, sizeof(logBuf), "BLANC: S99=%.2f | V moy=%.2f -> S_MIN=%.2f\n", whiteS99, whiteV, S_MIN);
+    snprintf(logBuf, sizeof(logBuf), "WHITE: S99=%.2f | Mean V=%.2f -> S_MIN=%.2f\n", whiteS99, whiteV, S_MIN);
     msg += logBuf;
 
-    if (whiteV < 0.5) msg += "⚠️ ATTENTION : Fond sombre, ajoute de la lumière !\n";
-    if (whiteS99 > 0.25) msg += "⚠️ ATTENTION : Fond très coloré !\n";
-    msg += "✅ Calibration BLANC terminée avec succès.";
+    if (whiteV < 0.5) msg += "⚠️ WARNING: Dark background, add more light!\n";
+    if (whiteS99 > 0.25) msg += "⚠️ WARNING: Highly colored background!\n";
+    msg += "✅ WHITE calibration completed successfully.";
   } else {
-    msg = "❌ ÉCHEC : Capture du blanc ratée.";
+    msg = "❌ FAILURE: White capture failed.";
   }
 
   isCalibrating = false;
@@ -175,11 +175,11 @@ String calibColor(int k) {
     done[k] = true;
 
     char logBuf[200];
-    snprintf(logBuf, sizeof(logBuf), "%s: H=%.0f° | Tol=+/-%.0f° (S moy=%.2f, V moy=%.2f, %ld px)\n✅ Calibration %s terminée !",
+    snprintf(logBuf, sizeof(logBuf), "%s: H=%.0f° | Tol=+/-%.0f° (Mean S=%.2f, Mean V=%.2f, %ld px)\n✅ %s calibration completed!",
              NAMES[k], mean, hTol[k], sumS / n, sumV / n, n, NAMES[k]);
     msg = logBuf;
   } else {
-    msg = "❌ ÉCHEC: Pas assez de pixels saturés. Cube absent ou mal centré ?";
+    msg = "❌ FAILURE: Not enough saturated pixels. Cube missing or poorly centered?";
   }
 
   isCalibrating = false;
@@ -187,7 +187,7 @@ String calibColor(int k) {
 }
 
 String printBlockConfig() {
-  String out = "\n// --- BLOC CONFIGURATION C++ ---\n";
+  String out = "\n// --- C++ CONFIGURATION BLOCK ---\n";
   out += "const float S_MIN = " + String(S_MIN, 2) + ";\n";
   out += "const float V_MIN = " + String(V_MIN, 2) + ";\n";
   out += "const float hCenter[3] = {" + String(hCenter[0], 0) + ", " + String(hCenter[1], 0) + ", " + String(hCenter[2], 0) + "};\n";
@@ -199,14 +199,14 @@ String printBlockConfig() {
 const char* classify(float h) {
   for (int k = 0; k < 3; k++)
     if (angDiff(h, hCenter[k]) <= hTol[k]) return NAMES[k];
-  return "AUCUN";
+  return "NONE";
 }
 
 String detectColorJSON() {
   if (isCalibrating) return "{\"color\":\"CALIBRATION\",\"h\":0,\"s\":0,\"v\":0}";
 
   camera_fb_t *fb = grab();
-  if (!fb) return "{\"color\":\"AUCUN\",\"h\":0,\"s\":0,\"v\":0}";
+  if (!fb) return "{\"color\":\"NONE\",\"h\":0,\"s\":0,\"v\":0}";
 
   int x0 = (W - ROI) / 2, y0 = (H - ROI) / 2;
   double sc = 0, ss = 0, sumS = 0, sumV = 0; long n = 0;
@@ -224,7 +224,7 @@ String detectColorJSON() {
   esp_camera_fb_return(fb);
 
   if (n < 0.08 * ROI * ROI) {
-    return "{\"color\":\"AUCUN\",\"h\":0,\"s\":0,\"v\":0}";
+    return "{\"color\":\"NONE\",\"h\":0,\"s\":0,\"v\":0}";
   }
 
   float hm = atan2(ss, sc) * 180.0 / M_PI; 
@@ -241,7 +241,7 @@ String detectColorJSON() {
 }
 
 // =========================================================================
-// 4. FLUX VIDEO MJPEG (STREAM EN DIRECT)
+// 4. MJPEG VIDEO STREAM (LIVE STREAM)
 // =========================================================================
 esp_err_t stream_handler(httpd_req_t *req) {
   camera_fb_t * fb = NULL;
@@ -302,11 +302,11 @@ esp_err_t stream_handler(httpd_req_t *req) {
 }
 
 // =========================================================================
-// 5. PAGE WEB INTERACTIVE (HTML/CSS/JS) - COMPACTE ET OPTIMISÉE
+// 5. INTERACTIVE WEB PAGE (HTML/CSS/JS) - COMPACT & OPTIMIZED
 // =========================================================================
 static const char PROGMEM INDEX_HTML[] = R"rawliteral(
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -322,7 +322,7 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 10px; text-align: center; }
     h1 { color: var(--accent); margin: 5px 0 15px 0; font-weight: 300; letter-spacing: 1px; font-size: 20px; text-transform: uppercase; }
     
-    /* Grille sur une seule ligne compacte tenant sur l'écran */
+    /* Single line compact grid fitting on screen */
     .grid { display: flex; flex-wrap: nowrap; justify-content: center; gap: 12px; max-width: 1250px; margin: 0 auto; }
     
     .card { background: var(--card); border-radius: 10px; padding: 12px; width: 310px; box-shadow: 0 6px 20px rgba(0,0,0,0.4); border: 1px solid var(--border); display: flex; flex-direction: column; justify-content: space-between; }
@@ -347,33 +347,33 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
   </style>
 </head>
 <body>
-  <h1>VISION & CALIBRATION ESP32</h1>
+  <h1>ESP32 VISION & CALIBRATION</h1>
   <div class="grid">
-    <!-- Bloc 1: Vidéo -->
+    <!-- Block 1: Video -->
     <div class="card">
-      <h3>FLUX VIDEO (QVGA)</h3>
+      <h3>VIDEO STREAM (QVGA)</h3>
       <div id="video-container">
         <img id="video-stream" src="/stream" alt="Video Stream">
-        <div id="video-placeholder">🎥 VIDÉO PAUSÉE (TEST EN COURS)</div>
+        <div id="video-placeholder">🎥 VIDEO PAUSED (TEST IN PROGRESS)</div>
       </div>
       <div style="font-size: 10px; color: #8b949e; margin-top: 6px;">XIAO ESP32S3 Sense</div>
     </div>
 
-    <!-- Bloc 2: Commandes -->
+    <!-- Block 2: Controls -->
     <div class="card">
-      <h3>COMMANDES CALIBRATION</h3>
-      <button class="btn btn-w" onclick="calib('w')">1. Calibrer Blanc (Tapis)</button>
-      <button class="btn btn-r" onclick="calib('r')">2. Calibrer Cube Rouge</button>
-      <button class="btn btn-g" onclick="calib('g')">3. Calibrer Cube Vert</button>
-      <button class="btn btn-b" onclick="calib('b')">4. Calibrer Cube Bleu</button>
-      <button class="btn btn-export" onclick="exportConfig()">5. Exporter Config C++</button>
-      <button id="test-btn" class="btn btn-test" onclick="toggleTest()">TEST LIVE : OFF</button>
+      <h3>CALIBRATION CONTROLS</h3>
+      <button class="btn btn-w" onclick="calib('w')">1. Calibrate White (Mat)</button>
+      <button class="btn btn-r" onclick="calib('r')">2. Calibrate Red Cube</button>
+      <button class="btn btn-g" onclick="calib('g')">3. Calibrate Green Cube</button>
+      <button class="btn btn-b" onclick="calib('b')">4. Calibrate Blue Cube</button>
+      <button class="btn btn-export" onclick="exportConfig()">5. Export C++ Config</button>
+      <button id="test-btn" class="btn btn-test" onclick="toggleTest()">LIVE TEST : OFF</button>
     </div>
 
-    <!-- Bloc 3: Terminal à droite -->
+    <!-- Block 3: Terminal on the right -->
     <div class="card card-terminal">
-      <h3>TERMINAL & RÉSULTATS DÉTECTION</h3>
-      <div id="terminal">> Système initialisé.\n> Prêt à calibrer ou tester...</div>
+      <h3>TERMINAL & DETECTION RESULTS</h3>
+      <div id="terminal">> System initialized.\n> Ready to calibrate or test...</div>
     </div>
   </div>
 
@@ -402,7 +402,7 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
     }
 
     function calib(cmd) {
-      log("Lancement calibration... (Vidéo en pause)");
+      log("Starting calibration... (Video paused)");
       setVideoState(false);
 
       setTimeout(() => {
@@ -413,14 +413,14 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
             if (!testing) setVideoState(true);
           })
           .catch(() => { 
-            log("❌ Erreur de communication HTTP.");
+            log("❌ HTTP communication error.");
             if (!testing) setVideoState(true);
           });
       }, 300);
     }
 
     function exportConfig() {
-      log("Exportation configuration C++...");
+      log("Exporting C++ configuration...");
       const wasTesting = testing;
       if (wasTesting) toggleTest();
       setVideoState(false);
@@ -433,7 +433,7 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
             if (!wasTesting) setVideoState(true);
           })
           .catch(() => {
-            log("❌ Erreur lors de l'exportation.");
+            log("❌ Error during export.");
             if (!wasTesting) setVideoState(true);
           });
       }, 200);
@@ -443,18 +443,18 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
       testing = !testing;
       const btn = document.getElementById('test-btn');
       if (testing) {
-        btn.innerText = "TEST LIVE : ON";
+        btn.innerText = "LIVE TEST : ON";
         btn.style.background = "#2ed573";
         btn.style.color = "#fff";
         setVideoState(false);
-        log("Mode Test Live DÉMARRÉ.");
+        log("Live Test mode STARTED.");
         timer = setInterval(runDetect, 400);
       } else {
-        btn.innerText = "TEST LIVE : OFF";
+        btn.innerText = "LIVE TEST : OFF";
         btn.style.background = "#00f2fe";
         btn.style.color = "#000";
         clearInterval(timer);
-        log("Mode Test Live ARRÊTÉ.");
+        log("Live Test mode STOPPED.");
         setVideoState(true);
       }
     }
@@ -464,7 +464,7 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
         .then(res => res.json())
         .then(data => {
           if (data.color === "CALIBRATION") return;
-          const txt = data.color === "AUCUN" ? "TAPIS BLANC" : "CUBE " + data.color;
+          const txt = data.color === "NONE" ? "WHITE MAT" : data.color + " CUBE";
           log(`[LIVE] ${txt} (H=${data.h}°, S=${data.s}, V=${data.v})`);
         })
         .catch(() => {});
@@ -475,7 +475,7 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
 )rawliteral";
 
 // =========================================================================
-// 6. GESTIONNAIRES DE REQUETES HTTP
+// 6. HTTP REQUEST HANDLERS
 // =========================================================================
 esp_err_t index_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
@@ -498,7 +498,7 @@ esp_err_t calib_handler(httpd_req_t *req) {
       return ESP_OK;
     }
   }
-  httpd_resp_sendstr(req, "Commande inconnue");
+  httpd_resp_sendstr(req, "Unknown command");
   return ESP_OK;
 }
 
@@ -558,7 +558,7 @@ void setup() {
   c.grab_mode = CAMERA_GRAB_LATEST;
 
   if (esp_camera_init(&c) != ESP_OK) {
-    Serial.println("Erreur initialisation caméra");
+    Serial.println("Camera initialization error");
     while (1);
   }
 
@@ -568,15 +568,15 @@ void setup() {
   s->set_gain_ctrl(s, 0);
 
   WiFi.begin(ssid, password);
-  Serial.print("Connexion au Wi-Fi");
+  Serial.print("Connecting to Wi-Fi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
   
   Serial.println("\n------------------------------------------------");
-  Serial.println("Wi-Fi connecté !");
-  Serial.print("Ouvre ton navigateur et tape : http://");
+  Serial.println("Wi-Fi connected!");
+  Serial.print("Open your browser and type: http://");
   Serial.println(WiFi.localIP());
   Serial.println("------------------------------------------------");
 

@@ -2,32 +2,32 @@
 #include <math.h>
 
 // =========================================================================
-// 1. VALEURS HSV : JAUNE, VERT, BLEU
+// 1. HSV VALUES: YELLOW, GREEN, BLUE
 // =========================================================================
 const float S_MIN = 0.16;
 const float V_MIN = 0.20;
-const float hCenter[3] = {64, 146, 194}; // Teinte modifiée pour le jaune (~30°) {63, 137, 187};  {12, 13, 31};
+const float hCenter[3] = {64, 146, 194}; // Hue modified for yellow (~30°) {63, 137, 187};  {12, 13, 31};
 const float hTol[3]    = {12, 12, 19};
 // =========================================================================
 
-const char NAMES[3][10] = {"JAUNE", "VERT", "BLEU"};
-const char CODES[3]     = {'J', 'V', 'B'};   // 'J' pour Jaune (anciennement 'R')
+const char NAMES[3][10] = {"YELLOW", "GREEN", "BLUE"};
+const char CODES[3]     = {'J', 'V', 'B'};   // 'J' for Yellow (formerly 'R')
 
 // =========================================================================
-// 2. BROCHES & CAPTEUR ULTRASON
+// 2. PINS & ULTRASONIC SENSOR
 // =========================================================================
 const uint8_t PIN_TRIG = 1;               // D0 = GPIO1
 const uint8_t PIN_ECHO = 4;               // D1 = GPIO2
 
-const int PIN_UART_TX = 43;               // D6 -> GPIO16 de l'ESP32 maître
-const int PIN_UART_RX = 44;               // D7 (non utilisé pour l'instant)
+const int PIN_UART_TX = 43;               // D6 -> GPIO16 of master ESP32
+const int PIN_UART_RX = 44;               // D7 (not used for now)
 
-// Bouton poussoir d'ARRÊT D'URGENCE (vers GND, INPUT_PULLUP) -> envoie 'A' à l'ESP32 maître
-const uint8_t PIN_BTN_ARRET = 8;          // D9 = GPIO5 (libre : ni caméra, ni ultrason, ni UART)
-const unsigned long ANTIREBOND_ARRET_MS = 600;
-const char CODE_ARRET = 'A';
+// EMERGENCY STOP push button (to GND, INPUT_PULLUP) -> sends 'A' to master ESP32
+const uint8_t PIN_BTN_ARRET = 8;          // D9 = GPIO5 (free: neither camera, nor ultrasonic, nor UART)
+const unsigned long DEBOUNCE_STOP_MS = 600;
+const char STOP_CODE = 'A';
 
-// Caméra XIAO ESP32S3 Sense
+// XIAO ESP32S3 Sense Camera
 #define PWDN_GPIO_NUM  -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM  10
@@ -47,29 +47,29 @@ const char CODE_ARRET = 'A';
 
 const int W = 320, H = 240;
 const int ROI = 100;
-const int FRAMES_A_JETER = 2;             // images anciennes du tampon caméra
-const int NFRAMES = 3;                    // images analysées par capture
-const float RATIO_MIN_PIXELS = 0.08;      // part minimale de pixels colorés
+const int FRAMES_TO_DISCARD = 2;          // old frames from camera buffer
+const int NFRAMES = 3;                    // frames analyzed per capture
+const float MIN_PIXEL_RATIO = 0.08;       // minimum proportion of colored pixels
 
-volatile bool arretDemande = false;
-volatile unsigned long dernierFrontArret = 0;
+volatile bool stopRequested = false;
+volatile unsigned long lastStopEdge = 0;
 
-bool objetPresentPrecedent = false;
-unsigned long dernierDeclenchement = 0;
-const unsigned long DELAI_ENTRE_CAPTURES = 2000; // 2 secondes de pause entre deux analyses
+bool previousObjectPresent = false;
+unsigned long lastTrigger = 0;
+const unsigned long CAPTURE_DELAY_MS = 2000; // 2 seconds pause between analyses
 
 // =========================================================================
-// 2bis. BOUTON D'ARRÊT : interruption (aucun appui perdu pendant l'analyse caméra)
+// 2bis. STOP BUTTON: interrupt (no presses lost during camera analysis)
 // =========================================================================
-void IRAM_ATTR isrBoutonArret() {
+void IRAM_ATTR isrStopButton() {
   unsigned long now = millis();
-  if (now - dernierFrontArret < ANTIREBOND_ARRET_MS) return;
-  dernierFrontArret = now;
-  if (digitalRead(PIN_BTN_ARRET) == LOW) arretDemande = true;
+  if (now - lastStopEdge < DEBOUNCE_STOP_MS) return;
+  lastStopEdge = now;
+  if (digitalRead(PIN_BTN_ARRET) == LOW) stopRequested = true;
 }
 
 // =========================================================================
-// 3. TRAITEMENT D'IMAGE & CAPTEUR ULTRASON
+// 3. IMAGE PROCESSING & ULTRASONIC SENSOR
 // =========================================================================
 void rgb2hsv(uint8_t r, uint8_t g, uint8_t b, float &h, float &s, float &v) {
   float rf = r / 255.0, gf = g / 255.0, bf = b / 255.0;
@@ -89,16 +89,16 @@ float angDiff(float a, float b) {
   return d > 180 ? 360.0f - d : d;
 }
 
-float mesurerDistanceCm() {
+float measureDistanceCm() {
   digitalWrite(PIN_TRIG, LOW);
   delayMicroseconds(2);
   digitalWrite(PIN_TRIG, HIGH);
   delayMicroseconds(10);
   digitalWrite(PIN_TRIG, LOW);
 
-  long duree = pulseIn(PIN_ECHO, HIGH, 30000); // Timeout à 30ms (~500 cm max)
-  if (duree == 0) return 999.0;
-  return (duree * 0.0343) / 2.0;
+  long duration = pulseIn(PIN_ECHO, HIGH, 30000); // Timeout at 30ms (~500 cm max)
+  if (duration == 0) return 999.0;
+  return (duration * 0.0343) / 2.0;
 }
 
 camera_fb_t* grab() {
@@ -110,9 +110,9 @@ camera_fb_t* grab() {
   return NULL;
 }
 
-// Analyse la zone centrale ; renvoie le code UART ('J','V','B' ou 'X')
-char analyserCube() {
-  for (int i = 0; i < FRAMES_A_JETER; i++) {
+// Analyzes the central zone; returns the UART code ('J', 'V', 'B' or 'X')
+char analyzeCube() {
+  for (int i = 0; i < FRAMES_TO_DISCARD; i++) {
     camera_fb_t *fb = grab();
     if (fb) esp_camera_fb_return(fb);
   }
@@ -146,12 +146,12 @@ char analyserCube() {
   }
 
   if (framesOk == 0) {
-    Serial.println("❌ [CAMERA] Aucune image obtenue -> X");
+    Serial.println("❌ [CAMERA] No image obtained -> X");
     return 'X';
   }
 
-  if (n < RATIO_MIN_PIXELS * ROI * ROI * framesOk) {
-    Serial.printf("⚪ [CAMERA] Pas assez de pixels colorés (%ld) : blanc/gris/vide -> X\n", n);
+  if (n < MIN_PIXEL_RATIO * ROI * ROI * framesOk) {
+    Serial.printf("⚪ [CAMERA] Not enough colored pixels (%ld) : white/gray/empty -> X\n", n);
     return 'X';
   }
 
@@ -165,26 +165,26 @@ char analyserCube() {
       return CODES[k];
     }
   }
-  Serial.printf("❓ [CAMERA] Couleur inconnue | H=%.1f° S=%.2f V=%.2f (%ld px) -> X\n",
+  Serial.printf("❓ [CAMERA] Unknown color | H=%.1f° S=%.2f V=%.2f (%ld px) -> X\n",
                 hm, sumS / n, sumV / n, n);
   return 'X';
 }
 
 // =========================================================================
-// 4. DETECTION PAR ULTRASON (Déclenchement si < 7cm)
+// 4. ULTRASONIC DETECTION (Triggered if < 7cm)
 // =========================================================================
-bool detectionDeclenchee() {
-  float distance = mesurerDistanceCm();
+bool isDetectionTriggered() {
+  float distance = measureDistanceCm();
 
   if (distance > 0 && distance < 7.0) {
-    if (!objetPresentPrecedent && (millis() - dernierDeclenchement > DELAI_ENTRE_CAPTURES)) {
-      objetPresentPrecedent = true;
-      dernierDeclenchement = millis();
-      Serial.printf("🎯 [ULTRASON] Cube détecté à %.1f cm (< 7 cm) !\n", distance);
+    if (!previousObjectPresent && (millis() - lastTrigger > CAPTURE_DELAY_MS)) {
+      previousObjectPresent = true;
+      lastTrigger = millis();
+      Serial.printf("🎯 [ULTRASONIC] Cube detected at %.1f cm (< 7 cm)!\n", distance);
       return true;
     }
   } else if (distance >= 9.0) { 
-    objetPresentPrecedent = false;
+    previousObjectPresent = false;
   }
   return false;
 }
@@ -200,7 +200,7 @@ void setup() {
   pinMode(PIN_ECHO, INPUT);
 
   pinMode(PIN_BTN_ARRET, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_BTN_ARRET), isrBoutonArret, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PIN_BTN_ARRET), isrStopButton, CHANGE);
 
   camera_config_t c = {};
   c.ledc_channel = LEDC_CHANNEL_0; c.ledc_timer = LEDC_TIMER_0;
@@ -220,8 +220,8 @@ void setup() {
 
   esp_err_t err = esp_camera_init(&c);
   if (err != ESP_OK) {
-    Serial.printf("Erreur initialisation caméra : 0x%x\n", err);
-    Serial.printf("PSRAM : %s (%u octets)\n", psramFound() ? "OK" : "ABSENTE", ESP.getPsramSize());
+    Serial.printf("Camera initialization error: 0x%x\n", err);
+    Serial.printf("PSRAM: %s (%u bytes)\n", psramFound() ? "OK" : "ABSENT", ESP.getPsramSize());
     while (1) delay(1000);
   }
 
@@ -230,20 +230,20 @@ void setup() {
   s->set_exposure_ctrl(s, 0);
   s->set_gain_ctrl(s, 0);
 
-  Serial.println("XIAO prêt : placez un cube JAUNE, VERT ou BLEU à moins de 7 cm.");
+  Serial.println("XIAO ready: place a YELLOW, GREEN, or BLUE cube at less than 7 cm.");
 }
 
 void loop() {
-  if (detectionDeclenchee()) {
-    char code = analyserCube();
+  if (isDetectionTriggered()) {
+    char code = analyzeCube();
     Serial1.write(code);                       
-    Serial.printf("📤 [UART] Envoyé : %c\n", code);
+    Serial.printf("📤 [UART] Sent: %c\n", code);
   }
 
-  if (arretDemande) {
-    arretDemande = false;
-    Serial1.write(CODE_ARRET);
-    Serial.println("🛑 [BOUTON] Appui détecté -> 'A' envoyé (arrêt d'urgence)");
+  if (stopRequested) {
+    stopRequested = false;
+    Serial1.write(STOP_CODE);
+    Serial.println("🛑 [BUTTON] Press detected -> 'A' sent (emergency stop)");
   }
 
   while (Serial.available() > 0) {
@@ -251,6 +251,6 @@ void loop() {
       if (c == '\n' || c == '\r' || c == ' ') continue;   
       c = toupper(c);                                      
       Serial1.write(c);
-      Serial.printf("⌨️ [DEBUG] '%c' retransmis à l'ESP32\n", c);
+      Serial.printf("⌨️ [DEBUG] '%c' retransmitted to ESP32\n", c);
   }
 }

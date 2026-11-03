@@ -1,26 +1,26 @@
 #include <Servo.h>
 
-Servo monServo;          // Crée l'objet pour contrôler le servomoteur
-const int pinServo = 34;  // Broche à laquelle est connecté le signal du servo
+Servo myServo;           // Creates the object to control the servo motor
+const int servoPin = 34; // Pin to which the servo signal is connected
 
 void setup() {
-  monServo.attach(pinServo);  // Associe le servomoteur à la broche 9
+  myServo.attach(servoPin); // Attaches the servo motor to the pin
 }
 
 void loop() {
-  // 1. Position à 0 degré
-  monServo.write(0);
-  delay(2000); // Attend 2 secondes
+  // 1. Position at 0 degrees
+  myServo.write(0);
+  delay(2000); // Wait 2 seconds
 
-  // 2. Position à 90 degrés
-  monServo.write(90);
-  delay(2000); // Attend 2 secondes
+  // 2. Position at 90 degrees
+  myServo.write(90);
+  delay(2000); // Wait 2 seconds
 
-  // 3. Position à 180 degrés
-  monServo.write(180);
-  delay(2000); // Attend 2 secondes
+  // 3. Position at 180 degrees
+  myServo.write(180);
+  delay(2000); // Wait 2 seconds
   
-  //4. Position à degré
-  monServo.write(270); 
+  // 4. Position at degree
+  myServo.write(270); 
   delay(2000);
 }
