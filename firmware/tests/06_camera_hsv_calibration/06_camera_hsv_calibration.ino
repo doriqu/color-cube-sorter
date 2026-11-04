@@ -6,8 +6,8 @@
 // =========================================================================
 // 1. WI-FI CONFIGURATION
 // =========================================================================
-const char* ssid     = "Infinix HOT 50 Pro+";
-const char* password = "doriqueleee";
+const char* ssid     = "**********";   //To assign
+const char* password = "**********";   //To assign
 
 // =========================================================================
 // 2. XIAO ESP32S3 SENSE PINOUT

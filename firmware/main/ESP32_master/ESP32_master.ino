@@ -1,9 +1,9 @@
 // =========================================================================
 // 0. BLYNK (must come BEFORE the Blynk #includes)
 // =========================================================================
-#define BLYNK_TEMPLATE_ID   "TMPL2qTbX3jmd"
-#define BLYNK_TEMPLATE_NAME "Tri Industriel"
-#define BLYNK_AUTH_TOKEN    "I8FXoE_PgriUNRmdeYW3N6cuVDfQfkgl"      // <-- Device authentication token
+#define BLYNK_TEMPLATE_ID   "**********"      //To assign
+#define BLYNK_TEMPLATE_NAME "**********"      //To assign
+#define BLYNK_AUTH_TOKEN    "**********"      // <-- Device authentication token
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -106,8 +106,8 @@ const bool DEBUG_RAW_UART = true;                 // print every byte received f
 const unsigned long HEARTBEAT_MS = 5000;          // periodic status line (0 = disabled)
 
 // ---- Wi-Fi / Blynk ------------------------------------------------------
-const char* WIFI_SSID = "Infinix HOT 50 Pro+";
-const char* WIFI_PASS = "doriqueleee";
+const char* WIFI_SSID = "*********";              //To assign
+const char* WIFI_PASS = "*********";              //To assign
 const char* BLYNK_SERVER = "ny3.blynk.cloud";     // NY3 region (seen in the dashboard URL)
 
 const char* RESET_CODE = "EPAC";                  // password to reset the counters to zero

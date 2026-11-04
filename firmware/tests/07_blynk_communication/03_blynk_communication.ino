@@ -5,8 +5,8 @@
 // Serial monitor (115200): type J / V / B / X to simulate a sorted cube, R to reset, S for status.
 
 // Must come BEFORE the Blynk #includes
-#define BLYNK_TEMPLATE_ID   "TMPL2qTbX3jmd"
-#define BLYNK_TEMPLATE_NAME "Tri Industriel"
+#define BLYNK_TEMPLATE_ID   "**********"    //To assign
+#define BLYNK_TEMPLATE_NAME "**********"    //To assign
 #define BLYNK_AUTH_TOKEN    "YOUR_BLYNK_AUTH_TOKEN"     // <-- device authentication token
 
 #include <Arduino.h>
