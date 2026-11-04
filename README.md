@@ -1,10 +1,14 @@
-# Tri Industriel
+# Industrial Color Cube Sorter
 
 **Automatic color sorting of cubes, monitored remotely in real time.**
 
 A small-scale industrial sorting line built by the *Club d'Informatique Industrielle · IGE × EPAC* (École Polytechnique d'Abomey-Calavi).
 
 Cubes ride a conveyor belt. A camera identifies each cube's color, a servo-driven bin swings to the right position, and every sort is counted and sent live to a Blynk dashboard. Unknown cubes and emergencies stop the belt safely.
+
+![picture](docs/tri.jpeg)
+
+![demo](docs/output.gif)
 
 ![Who talks to whom, and how](docs/who_talks_to_whom.png)
 
