@@ -8,7 +8,6 @@ Cubes ride a conveyor belt. A camera identifies each cube's color, a servo-drive
 
 ![picture](docs/tri.jpeg)
 
-![demo](docs/output.gif)
 
 ![Who talks to whom, and how](docs/who_talks_to_whom.png)
 
@@ -148,7 +147,6 @@ A detailed explanation of each logic, with the calculations, is in the **softwar
    const char* WIFI_SSID = "...";
    const char* WIFI_PASS = "...";
    ```
-   Never commit real credentials. If a token was ever published, regenerate it in Blynk.
 4. **Calibrate the sensors** with `01_laser_ldr_detection.ino`: read the value with the beam received (about 4095) and with a cube blocking it (about 76), then adjust `DETECTION_THRESHOLD` (default 2000).
 5. **Check the belt** with `02_stepper_tb6600.ino` (wiring and speed).
 6. **Check the cloud link** with `03_blynk_communication.ino`.
@@ -173,7 +171,6 @@ You can run the whole sorting logic **without the camera**: with `KEYBOARD_SIMUL
 
 **Resetting the counters needs two steps:** turn "Reset DB" **on**, then type the code (`RESET_CODE`, default `EPAC`) in "Confirmation Code". A wrong code cancels the reset.
 
-If your dropdown order differs, adjust `BIN_MENU` and `MENU_OFFSET` in the sketch.
 
 ## Camera protocol (UART)
 
@@ -247,11 +244,10 @@ Suggested order: sensors → motor → Blynk → full system without camera → 
 └── README.md
 ```
 
-> The XIAO ESP32-S3 camera firmware (HSV detection, ultrasonic reading) is not part of this repository yet. It can be added as `camera_xiao/`.
+
 
 ## Results
-
-Demo video and figures to be filled in after the final tests:
+![demo](docs/output.gif)
 
 | Metric | Value |
 |--------|-------|
